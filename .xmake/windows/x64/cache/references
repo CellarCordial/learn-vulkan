@@ -1,0 +1,6 @@
+{
+    packages = {
+        [[C:\Users\cir12\AppData\Local\.xmake\packages\s\spdlog\v1.15.0\b90f1a53d8774e77a175f0acf6ca3954]],
+        [[C:\Users\cir12\AppData\Local\.xmake\packages\g\glfw\3.4\fc47358da159466996f7d289b4cf1b4e]]
+    }
+}

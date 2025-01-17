@@ -1,0 +1,5 @@
+checking for Microsoft Visual Studio (x64) version ... 2022
+checking for Microsoft C/C++ Compiler (x64) version ... 19.42.34435
+create ok!
+compile_commands.json updated!
+[100%]: build ok, spent 0.64s

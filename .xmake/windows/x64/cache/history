@@ -1,0 +1,6 @@
+{
+    cmdlines = {
+        [[xmake l c:\Users\cir12\.vscode\extensions\tboox.xmake-vscode-2.4.0\assets\update_intellisense.lua .vscode clangd]],
+        "xmake "
+    }
+}
