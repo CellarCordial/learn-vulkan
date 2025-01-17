@@ -7,7 +7,6 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 #include <vulkan/vulkan.h>
-#include <string>
 #include <vector>
 
 #include "glfw_window.h"
@@ -55,17 +54,28 @@ namespace fantasy
 
 	private:
 		VkInstance _instance;
-		std::vector<std::string> _instance_layers;
-		std::vector<std::string> _instance_extensions;
 
 		VkDebugUtilsMessengerEXT _debug_messager;
 		std::vector<const char*> _validation_layers;
 		std::vector<const char*> _extensions;
 		VkDebugUtilsMessengerEXT _debug_callback;
 
-		VkPhysicalDevice _physical_device = VK_NULL_HANDLE;
+		// VkSurfaceKHR 对象是平台无关的, 但它的创建依赖窗口系统.
+		// 比如, 在 Windows 系统上, 它的创建需要 HWND 和 HMODULE, 
+		// 存在一个叫做 VK_KHR_win32_surface 的 Windows 平台特有扩展, 
+		// 用于处理与 Windows 系统窗口交互有关的问题, 
+		// 这一扩展也被包含在了 glfwGetRequiredInstanceExtensions 函数获取的扩展列表中.
+		// 这里使用 glfw, 故直接用 glfwCreateWindowSurface() 函数获取 surface.
 		VkSurfaceKHR _surface;
 
+
+		VkPhysicalDevice _physical_device = VK_NULL_HANDLE;
+
+
+		
+		// Vulkan 有多种不同类型的队列, 它们属于不同的队列族, 每个队列族的队列只允许执行特定的一部分指令.
+		// 创建 VkQueue 逻辑队列时会根据 queue family index 索引进行检索创建.
+		// 这里我们需要一个 graphics queue 和一个 present queue.
 		struct 
 		{
 			uint32_t graphics_index = INVALID_SIZE_32;

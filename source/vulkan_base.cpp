@@ -6,6 +6,7 @@
 
 namespace fantasy
 {
+	// 调试信息的回调函数.
 	VkBool32 debug_call_back(
 		VkDebugUtilsMessageSeverityFlagBitsEXT message_serverity,
 		VkDebugUtilsMessageTypeFlagsEXT message_type,
@@ -20,9 +21,12 @@ namespace fantasy
 	bool VulkanBase::initialize()
 	{
 		ReturnIfFalse(create_instance());
-		ReturnIfFalse(enumerate_support_extension());
+
+		// 遍历系统支持的扩展, 并全部输出.
+		// ReturnIfFalse(enumerate_support_extension());
 
 #ifdef DEBUG
+		// 开启调试信息回调, 之开启校验层并不会输出信息.
 		ReturnIfFalse(create_debug_utils_messager());
 #endif
 		ReturnIfFalse(glfwCreateWindowSurface(_instance, _window.get_window(), nullptr, &_surface) == VK_SUCCESS);
@@ -50,29 +54,37 @@ namespace fantasy
 
 	bool VulkanBase::create_instance()
 	{
+		// Instance info 需要 layers 和 extensions.
+		VkInstanceCreateInfo instance_info{};
+		instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+		
 		VkApplicationInfo app_info{};
 		app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
 		app_info.pApplicationName = "Vulkan Test";
 		app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 		app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
 		app_info.apiVersion = VK_MAKE_VERSION(1, 0, 0);
-
-		_validation_layers.push_back("VK_LAYER_KHRONOS_validation");
-
-		VkInstanceCreateInfo instance_info{};
-		instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+		
 		instance_info.pApplicationInfo = &app_info;
+
 
 		uint32_t glfw_extension_count = 0;
 		const CHAR** glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
 		_extensions.insert(_extensions.end(), glfw_extensions, glfw_extensions + glfw_extension_count);
 
 #ifdef DEBUG
-		_extensions.push_back("VK_EXT_debug_utils");
+		// LunarG 的 Vulkan SDK 允许我们通过 VKLAYER_KHRONOS_validation 来隐式地开启所有可用的校验层.
+		_validation_layers.push_back("VK_LAYER_KHRONOS_validation");
 
+		// 检查系统是否支持 _validation_layers 内的所有校验层, 
+		// 现在只有 VK_LAYER_KHRONOS_validation 一个校验层等待检查.
 		ReturnIfFalse(check_validation_layer_support());
+		
 		instance_info.enabledLayerCount = static_cast<uint32_t>(_validation_layers.size());
 		instance_info.ppEnabledLayerNames = _validation_layers.data();
+
+
+		_extensions.push_back("VK_EXT_debug_utils");
 #endif
 
 		instance_info.enabledExtensionCount = static_cast<uint32_t>(_extensions.size());
@@ -91,9 +103,9 @@ namespace fantasy
 		for (const auto& layer : _validation_layers)
 		{
 			bool found = false;
-			for (const auto& crProperty : properties)
+			for (const auto& property : properties)
 			{
-				if (strcmp(layer, crProperty.layerName) == 0)
+				if (strcmp(layer, property.layerName) == 0)
 				{
 					found = true;
 					break;
@@ -125,15 +137,20 @@ namespace fantasy
 	{
 		VkDebugUtilsMessengerCreateInfoEXT debug_util_info{};
 		debug_util_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-		debug_util_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+		debug_util_info.messageSeverity = 
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-		debug_util_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+		debug_util_info.messageType = 
+			VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 		debug_util_info.pfnUserCallback = debug_call_back;
 
+		// 于 vkCreateDebugUtilsMessengerEXT 函数是一个扩展函数, 不会被 Vulkan 库自动加载, 
+		// 所以需要我们自己使用 vkGetInstanceProcAddr 函数来加载它.
 		auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(_instance, "vkCreateDebugUtilsMessengerEXT");
+		
 		if (func)
 		{
 			func(_instance, &debug_util_info, nullptr, &_debug_callback);
@@ -177,7 +194,10 @@ namespace fantasy
 			vkGetPhysicalDeviceFeatures(device, &features);
 
 			if (
-				properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && 
+				(
+					properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
+					properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU 
+				) && 
 				features.geometryShader && 
 				find_queue_family(device)
 			)
@@ -192,6 +212,7 @@ namespace fantasy
 
 	bool VulkanBase::find_queue_family(auto& physical_device)
 	{
+		// 需要先确立 queue 的需求再创建 vkdevice.
 		uint32_t queue_family_count = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
 		std::vector<VkQueueFamilyProperties> properties(queue_family_count);
@@ -200,6 +221,8 @@ namespace fantasy
 		for (uint32_t ix = 0; ix < properties.size(); ++ix)
 		{
 			VkBool32 present_support = false;
+
+			// 验证所获取的 surface 能否支持该物理设备的 queue family 进行 present.
 			if (vkGetPhysicalDeviceSurfaceSupportKHR(physical_device , ix, _surface, &present_support) == VK_SUCCESS && present_support) 
 			{
 				_queue_family_index.present_index = ix;
@@ -217,6 +240,9 @@ namespace fantasy
 
 	bool VulkanBase::create_device()
 	{
+		VkDeviceCreateInfo device_create_info{};
+		device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+
 		std::set<uint32_t> queue_family_indices = { _queue_family_index.graphics_index, _queue_family_index.present_index };
 		std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
 
@@ -230,14 +256,14 @@ namespace fantasy
 			create_info.pQueuePriorities = &queue_priority;
 		}
 
-
-		VkPhysicalDeviceFeatures device_features{};
-
-		VkDeviceCreateInfo device_create_info{};
-		device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 		device_create_info.pQueueCreateInfos = queue_create_infos.data();
 		device_create_info.queueCreateInfoCount = 1;
+		
+		// 暂时不设立 features.
+		VkPhysicalDeviceFeatures device_features{};
 		device_create_info.pEnabledFeatures = &device_features;
+
+		// VK_KHR_surface 是一个实例扩展, 而不是设备扩展, 所以这里我们把 extension count 直接设为 0.
 		device_create_info.enabledExtensionCount = 0;
 #if DEBUG
 		device_create_info.ppEnabledLayerNames = _validation_layers.data();
