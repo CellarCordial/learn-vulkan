@@ -50,12 +50,17 @@ namespace fantasy
 		bool pick_physical_device();
 		bool find_queue_family(const auto& physical_device);
 
-		bool create_device();
-		bool create_swapchain();
-		bool load_shader();
-
 		bool check_device_extension(const auto& physical_device);
 		bool check_swapchain_support(const auto& physical_device);
+		bool create_render_pass();
+
+		bool create_device();
+		bool create_swapchain();
+		bool create_pipeline();
+		bool create_frame_buffer();
+		bool create_command_pool();
+		bool create_command_buffer();
+		bool record_command();
 
 	private:
 		GlfwWindow _window;
@@ -101,9 +106,20 @@ namespace fantasy
 			std::vector<VkPresentModeKHR> present_modes;
 		} _swapchain_info;
 
+		VkExtent2D _client_resolution;
 		VkSwapchainKHR _swapchain;
+		VkFormat _swapchain_format;
 		std::vector<VkImage> _back_buffers;
 		std::vector<VkImageView> _back_buffer_views;
+
+		VkPipelineLayout _layout;
+		VkRenderPass _render_pass;
+		VkPipeline _graphics_pipeline;
+
+		std::vector<VkFramebuffer> _frame_buffers;
+
+		VkCommandPool _cmd_pool;
+		std::vector<VkCommandBuffer> _cmd_buffers;
 	};
 }
 

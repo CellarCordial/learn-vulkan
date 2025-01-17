@@ -6,6 +6,7 @@
 #include <vector>
 #include "core/math/common.h"
 #include "vulkan/vulkan_core.h"
+#include "shader/shader_compiler.h"
 
 namespace fantasy
 {
@@ -23,6 +24,8 @@ namespace fantasy
 
 	bool VulkanBase::initialize()
 	{
+		set_shader_platform(ShaderPlatform::SPIRV);
+
 		ReturnIfFalse(create_instance());
 
 		// 遍历系统支持的扩展, 并全部输出.
@@ -36,6 +39,8 @@ namespace fantasy
 		ReturnIfFalse(pick_physical_device());
 		ReturnIfFalse(create_device());
 		ReturnIfFalse(create_swapchain());
+		ReturnIfFalse(create_pipeline());
+		ReturnIfFalse(create_frame_buffer());
 		return true;
 	}
 
@@ -45,6 +50,11 @@ namespace fantasy
 #ifdef DEBUG
 		ReturnIfFalse(destroy_debug_utils_messager());
 #endif
+		vkDestroyCommandPool(_device, _cmd_pool, nullptr);
+		for (const auto& frame_buffer : _frame_buffers) vkDestroyFramebuffer(_device, frame_buffer, nullptr);
+		vkDestroyPipeline(_device, _graphics_pipeline, nullptr);
+		vkDestroyPipelineLayout(_device, _layout, nullptr);
+		vkDestroyRenderPass(_device, _render_pass, nullptr);
 		for (const auto& view : _back_buffer_views) vkDestroyImageView(_device, view, nullptr);
 		vkDestroySwapchainKHR(_device, _swapchain, nullptr);
 		vkDestroySurfaceKHR(_instance, _surface, nullptr);
@@ -67,9 +77,11 @@ namespace fantasy
 		VkApplicationInfo app_info{};
 		app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
 		app_info.pApplicationName = "Vulkan Test";
-		app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-		app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-		app_info.apiVersion = VK_MAKE_VERSION(1, 0, 0);
+
+		// 和 SPIR-V 版本有关.
+		app_info.applicationVersion = VK_MAKE_VERSION(1, 3, 0);
+		app_info.engineVersion = VK_MAKE_VERSION(1, 3, 0);
+		app_info.apiVersion = VK_API_VERSION_1_3;	
 		
 		instance_info.pApplicationInfo = &app_info;
 
@@ -404,6 +416,7 @@ namespace fantasy
 				swapchain_create_info.imageColorSpace = _swapchain_info.surface_formats[0].colorSpace; 
 			}
 		}
+		_swapchain_format = swapchain_create_info.imageFormat;
 
 		for (const auto& present_mode : _swapchain_info.present_modes)
 		{
@@ -413,6 +426,8 @@ namespace fantasy
 		}
 
 		// 确定缓冲区分辨率.
+
+		// 这里确保分辨率可以为任意值. (当 surface_capabilities.currentExtent 为 INVALID_SIZE_32, 即分辨率可以为任意值).
 		if (_swapchain_info.surface_capabilities.currentExtent.width != INVALID_SIZE_32)
 		{
 			swapchain_create_info.imageExtent = _swapchain_info.surface_capabilities.currentExtent;
@@ -435,6 +450,7 @@ namespace fantasy
 				)
 			);
 		}
+		_client_resolution = swapchain_create_info.imageExtent;
 
 		// imageArrayLayers 成员变量用于指定每个图像所包含的层次. 
 		// 通常, 来说它的值为 1. 但对于 VR 相关的应用程序来说, 会使用更多的层次.
@@ -515,10 +531,333 @@ namespace fantasy
 		return true;
 	}
 
-	bool VulkanBase::load_shader()
+	bool VulkanBase::create_pipeline()
 	{
-		VkShaderModuleCreateInfo create_info{};
+		ShaderCompileDesc vs_desc;
+		vs_desc.shader_name = "triangle_vs.slang";
+		vs_desc.entry_point = "main";
+		vs_desc.target = ShaderTarget::Vertex;
+		ShaderData vs_data = compile_shader(vs_desc);
 		
+		ShaderCompileDesc ps_desc;
+		ps_desc.shader_name = "triangle_ps.slang";
+		ps_desc.entry_point = "main";
+		ps_desc.target = ShaderTarget::Pixel;
+		ShaderData ps_data = compile_shader(ps_desc);
+
+
+		VkShaderModule vs;
+		VkShaderModule ps;
+
+		VkShaderModuleCreateInfo create_info{};
+		create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		create_info.codeSize = vs_data.size();
+		create_info.pCode = reinterpret_cast<uint32_t*>(vs_data.data());
+		ReturnIfFalse(vkCreateShaderModule(_device, &create_info, nullptr, &vs) == VK_SUCCESS);
+		create_info.codeSize = ps_data.size();
+		create_info.pCode = reinterpret_cast<uint32_t*>(ps_data.data());
+		ReturnIfFalse(vkCreateShaderModule(_device, &create_info, nullptr, &ps) == VK_SUCCESS);
+
+		VkPipelineShaderStageCreateInfo vs_stage_create_info{};
+		vs_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		vs_stage_create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		vs_stage_create_info.module = vs;
+		vs_stage_create_info.pName = vs_desc.entry_point.c_str();
+
+		VkPipelineShaderStageCreateInfo ps_stage_create_info{};
+		ps_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		ps_stage_create_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		ps_stage_create_info.module = ps;
+		ps_stage_create_info.pName = ps_desc.entry_point.c_str();
+		// 该成员变量指定预编译宏.
+		// shader_stage_create_info.pSpecializationInfo;
+
+		VkPipelineShaderStageCreateInfo shader_stage_infos[2] = {
+			vs_stage_create_info, ps_stage_create_info
+		};
+
+		VkPipelineVertexInputStateCreateInfo vertex_input_create_info{};
+		vertex_input_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+		vertex_input_create_info.vertexBindingDescriptionCount = 0;
+		vertex_input_create_info.pVertexBindingDescriptions = nullptr;
+		vertex_input_create_info.vertexAttributeDescriptionCount = 0;
+		vertex_input_create_info.pVertexAttributeDescriptions = nullptr;
+
+		VkPipelineInputAssemblyStateCreateInfo input_assembly_create_info{};
+		input_assembly_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+		input_assembly_create_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		
+		// 设置为VK TRUE, 那么使用带有 _STRIP 结尾的图元类型, 
+		// 可以通过一个特殊索引值 0xFFFF 或 0xFFFFFFFF 达到重启图元的目的
+		// (从特殊索引值之后的索引重置为图元的第一个顶点).
+		input_assembly_create_info.primitiveRestartEnable = VK_FALSE;
+
+		VkViewport viewport;
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = _client_resolution.width;
+		viewport.height = _client_resolution.height;
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+
+		VkRect2D scissor;
+		scissor.offset = { 0, 0 };
+		scissor.extent = { _client_resolution.width, _client_resolution.height };
+
+		// 使用多个视口和裁剪矩形需要启用特性 VkPhysicalDeviceFeatures.multiViewport.
+		VkPipelineViewportStateCreateInfo viewport_create_info{};
+		viewport_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+		viewport_create_info.viewportCount = 1;
+		viewport_create_info.pViewports = &viewport;
+		viewport_create_info.scissorCount = 1;
+		viewport_create_info.pScissors = &scissor;
+
+		VkPipelineRasterizationStateCreateInfo raster_create_info{};
+		raster_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+
+		// 设置为 VK_TRUE 表示在近平面和远平面外的片段会被截断为在近平面和远平面上, 而不是直接丢弃这些片段.
+		// 需启用特性 VkPhysicalDeviceFeatures.depthClamp.
+		raster_create_info.depthBiasClamp = VK_FALSE;
+
+		// 设置为 VK_TRUE 表示所有几何图元都不能通过光栅化阶段, 这一设置会禁止一切片段输出到帧缓冲.
+		raster_create_info.rasterizerDiscardEnable = VK_FALSE;
+
+		// VK_POLYGON_MODE_FILL：整个多边形，包括多边形内部都产生片段.
+		// VK_POLYGON_MODE_LINE：只有多边形的边会产生片段.
+		// VK_POLYGON_MODE_POINT：只有多边形的顶点会产生片段.
+		raster_create_info.polygonMode = VK_POLYGON_MODE_FILL;
+
+		// lineWidth 成员变量用于指定光栅化后的线段宽度, 它以线宽所占的片段数目为单位.
+		// 线宽的最大值依赖于硬件, 使用大于 1.0f 的线宽, 需要启用特性 VkPhysicalDeviceFeatures.wideLines.
+		raster_create_info.lineWidth = 1.0f;
+
+		raster_create_info.cullMode = VK_CULL_MODE_BACK_BIT;
+		raster_create_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+		
+		// 设置为 VK_TRUE 时, 光栅化程序可以添加一个常量值或是一个基于片段所处线段的斜率得到的变量值到深度值上.
+		raster_create_info.depthBiasEnable = VK_FALSE;
+		raster_create_info.depthBiasConstantFactor = 0.0f;
+		raster_create_info.depthBiasClamp = 0.0f;
+		raster_create_info.depthBiasSlopeFactor = 0.0f;
+
+		VkPipelineMultisampleStateCreateInfo multisample_create_info{};
+		multisample_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+		multisample_create_info.sampleShadingEnable = VK_FALSE;
+		multisample_create_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+		multisample_create_info.minSampleShading = 1.0f;
+		multisample_create_info.pSampleMask = nullptr;
+		multisample_create_info.alphaToCoverageEnable = VK_FALSE;
+		multisample_create_info.alphaToOneEnable = VK_FALSE;
+
+		// 深度模板测试.
+		// VkPipelineDepthStencilStateCreateInfo
+
+		VkPipelineColorBlendAttachmentState color_blend_attachment{};
+        color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        color_blend_attachment.blendEnable = VK_FALSE;
+
+        VkPipelineColorBlendStateCreateInfo color_blend_create_info{};
+        color_blend_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        color_blend_create_info.logicOpEnable = VK_FALSE;
+        color_blend_create_info.logicOp = VK_LOGIC_OP_COPY;
+        color_blend_create_info.attachmentCount = 1;
+        color_blend_create_info.pAttachments = &color_blend_attachment;
+
+		// 包含 4 个浮点数的数组, 表示 RGBA 颜色值. 它的作用是为某些混合因子 (Blend Factors) 提供常量值. 
+		// 当 VkPipelineColorBlendAttachmentState.colorBlendOp 或 alphaBlendOP 中使用了以下混合因子
+		// VK_BLEND_FACTOR_CONSTANT_COLOR
+		// VK_BLEND_FACTOR_CONSTANT_ALPHA
+		// VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR
+		// VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA
+		// 时, blendConstants 的值会被用作输入.
+		// blendConstants 的默认值为 [0.0f, 0.0f, 0.0f, 0.0f]
+        color_blend_create_info.blendConstants[0] = 0.0f;
+        color_blend_create_info.blendConstants[1] = 0.0f;
+        color_blend_create_info.blendConstants[2] = 0.0f;
+        color_blend_create_info.blendConstants[3] = 0.0f;
+
+		// 只有非常有限的管线状态可以在不重建管线的情况下进行动态修改.
+		// 这包括视口大小, 线宽和混合常量 (VkPipelineColorBlendStateCreateInfo.blendConstants).
+		VkDynamicState dynamic_state[2] = {
+			VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_LINE_WIDTH
+		};
+		// 这样设置后会导致我们之前对这里使用的动态状态的设置被忽略掉, 需要我们在进行绘制时重新指定它们的值.
+		VkPipelineDynamicStateCreateInfo dynamic_state_create_info{};
+		dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+		dynamic_state_create_info.dynamicStateCount = 2;
+		dynamic_state_create_info.pDynamicStates = dynamic_state;
+
+
+		VkPipelineLayoutCreateInfo layout_create_info{};
+		layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		
+		// 暂时什么都不需要.
+		layout_create_info.setLayoutCount = 0;
+		layout_create_info.pSetLayouts = nullptr;
+		layout_create_info.pushConstantRangeCount = 0;
+		layout_create_info.pPushConstantRanges = nullptr;
+
+		ReturnIfFalse(vkCreatePipelineLayout(_device, &layout_create_info, nullptr, &_layout) == VK_SUCCESS);
+
+		ReturnIfFalse(create_render_pass());
+
+		VkGraphicsPipelineCreateInfo pipeline_create_info{};
+		pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+		pipeline_create_info.stageCount = 2;
+		pipeline_create_info.pStages = shader_stage_infos;
+		pipeline_create_info.pVertexInputState = &vertex_input_create_info;
+		pipeline_create_info.pInputAssemblyState = &input_assembly_create_info;
+		pipeline_create_info.pViewportState = &viewport_create_info;
+		pipeline_create_info.pRasterizationState = &raster_create_info;
+		pipeline_create_info.pMultisampleState = &multisample_create_info;
+		pipeline_create_info.pColorBlendState = &color_blend_create_info;
+		pipeline_create_info.pDynamicState = &dynamic_state_create_info;
+		pipeline_create_info.layout = _layout;
+		pipeline_create_info.renderPass = _render_pass;
+		
+		// 若是要应用其他 subpass, 需要再创建一个 VkGraphicsPipeline.
+		pipeline_create_info.subpass = 0; 
+
+		// basePipelineHandle 和 basePipelineIndex 成员变量用于以一个创建好的图形管线为基础创建一个新的图形管线.
+		pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
+		pipeline_create_info.basePipelineIndex = -1;
+
+		// 该函数被设计成一次调用可以通过多个 VkGraphicsPipelineCreateInfo 结构体数据创建多个 VkPipeline 对象.
+		ReturnIfFalse(VK_SUCCESS == vkCreateGraphicsPipelines(
+			_device, 
+			VK_NULL_HANDLE, 
+			1, 
+			&pipeline_create_info, 
+			nullptr, 
+			&_graphics_pipeline
+		));
+		
+		vkDestroyShaderModule(_device, vs, nullptr);
+		vkDestroyShaderModule(_device, ps, nullptr);
+
 		return true;
 	}
+
+	bool VulkanBase::create_render_pass()
+	{
+		VkAttachmentDescription attachment_description{};
+		attachment_description.format = _swapchain_format;
+
+		// 没有使用多重采样，所以将采样数设置为 1.
+		attachment_description.samples = VK_SAMPLE_COUNT_1_BIT;
+
+		// loadOp 和 storeOp 成员变量用于指定在渲染之前和渲染之后对附着中的数据进行的操作.
+		// VK_ATTACHMENT_LOAD_OP_LOAD：保持附着的现有内容.
+		// VK_ATTACHMENT_LOAD_OP_CLEAR：使用一个常量值来清除附着的内容.
+		// VK_ATTACHMENT_LOAD_OP_DONT_CARE：不关心附着现存的内容.
+		// VK_ATTACHMENT_STORE_OP_STORE：渲染的内容会被存储起来, 以便之后读取.
+		// VK_ATTACHMENT_STORE_OP_DONT_CARE：渲染后，不会读取帧缓冲的内容.
+		attachment_description.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		attachment_description.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		attachment_description.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attachment_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+		// image layout 类似于 resource state.
+		// initialLayout 成员变量用于指定渲染流程开始前的图像布局方式. 
+		// finalLayout 成员变量用于指定渲染流程结束后的图像布局方式. 
+		// 将 initialLayout 成员变量设置为 VK_IMAGE_LAYOUT_UNDEFINED 表示我们不关心之前的图像布局方式.
+		// 使用这一值后, 图像的内容不保证会被保留, 但这里，每次渲染前都要清除图像, 所以这样的设置更符合需求. 
+		// 对于 finalLayout 成员变量, 设置为 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR，使得渲染后的图像可以被交换链呈现.
+		// UNDEFINED 也就是 common, PRESENT_SRC_KHR 也就是 present.
+		attachment_description.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		attachment_description.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+		VkAttachmentReference attachment_ref{};
+		attachment_ref.attachment = 0;	// 索引.
+		// layout 成员变量用于指定进行子流程时引用的附着使用的布局方式, 
+		// Vulkan 会在子流程开始时自动将引用的附着转换到layout成员变量指定的图像布局.
+		// COLOR_ATTACHMENT_OPTIMAL 也就是 render target.
+		attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+		VkSubpassDescription subpass{};
+
+		// pipelineBindPoint 用于指定子流程绑定的管线类型. 它决定了子流程中使用的管线是图形管线还是计算管线.
+		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+
+		subpass.colorAttachmentCount = 1;
+		subpass.pColorAttachments = &attachment_ref;
+		// pInputAttachments: 被着色器读取的附着.
+		// pResolveAttachments: 用于多重采样的颜色附着.
+		// pDepthStencilAttachment: 用于深度和模板数据的附着.
+		// pPreserveAttachments: 没有被这一子流程使用，但需要保留数据的附着.
+
+		// 需要把各个 VkAttachmentDescription 都放进来, 然后 VkSubpassDescription 会根据其 colorAttachmentCount 索引
+		// 使用这些 VkAttachmentDescription, 所有 VkSubpassDescription 也放进来, VkSubpassDependency 则会索引他们
+		// 根据依赖排列 pass 的执行顺序.
+
+		VkRenderPassCreateInfo render_pass_create_info{};
+		render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		render_pass_create_info.attachmentCount = 1;
+		render_pass_create_info.pAttachments = &attachment_description;
+		render_pass_create_info.subpassCount = 1;
+		render_pass_create_info.pSubpasses = &subpass;
+
+		// VkSubpassDependency 用于定义渲染流程中不同子流程（Subpass）之间的依赖关系
+		// render_pass_create_info.dependencyCount
+		// render_pass_create_info.pDependencies
+
+		return vkCreateRenderPass(_device, &render_pass_create_info, nullptr, &_render_pass) == VK_SUCCESS;
+	}
+
+	bool VulkanBase::create_frame_buffer()
+	{
+		_frame_buffers.resize(_back_buffers.size());
+		for (uint32_t ix = 0; ix < _back_buffers.size(); ++ix)
+		{
+			VkImageView attachments[] = { _back_buffer_views[ix] };
+
+			VkFramebufferCreateInfo framebuffer_create_info{};
+			framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			framebuffer_create_info.attachmentCount = 1;
+			framebuffer_create_info.pAttachments = attachments;
+			framebuffer_create_info.renderPass = _render_pass;
+			framebuffer_create_info.width = _client_resolution.width;
+			framebuffer_create_info.height = _client_resolution.height;
+			
+			//layers 字段表示帧缓冲的层数.
+			// 对于普通的 2D 渲染，layers 设置为 1.
+			// 对于多视图渲染 (如 VR 或立方体贴图), layers 可以设置为大于 1 的值.
+			framebuffer_create_info.layers = 1;
+
+			ReturnIfFalse(vkCreateFramebuffer(_device, &framebuffer_create_info, nullptr, &_frame_buffers[ix]) == VK_SUCCESS);
+		}
+		return true;
+	}
+
+	bool VulkanBase::create_command_pool()
+	{
+		VkCommandPoolCreateInfo create_info{};
+		create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		create_info.queueFamilyIndex = _queue_family_index.graphics_index;
+		create_info.flags = 0;
+		// VK_COMMAND_POOL_CREATE_TRANSIENT_BIT: 使用它分配的
+		// 指令缓冲对象被频繁用来记录新的指令 (使用这一标记可能会改变帧缓冲对象的内存分配策略).
+		// VK COMMAND POOL CREATE RESET COMMAND BUFFER BIT: 
+		// 指令缓冲对象之间相互独立, 不会被一起重置, 不使用这一标记, 指令缓冲对象会被放在一起重置.
+
+		return vkCreateCommandPool(_device, &create_info, nullptr, &_cmd_pool) == VK_SUCCESS;
+	}
+
+	bool VulkanBase::create_command_buffer()
+	{
+		_cmd_buffers.resize(_back_buffers.size());
+		
+		VkCommandBufferAllocateInfo alloc_info{};
+		alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		alloc_info.commandPool = _cmd_pool;
+
+		// VK_COMMAND_BUFFER_LEVEL_PRIMARY: 可以被提交到队列进行执行, 但不能被其它指令缓冲对象调用。
+		// VK_COMMAND_BUFFER_LEVEL_SECONDARY: 不能直接被提交到队列进行执行, 但可以被主要指令缓冲对象调用执行
+		alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		alloc_info.commandBufferCount = static_cast<uint32_t>(_cmd_buffers.size());
+		ReturnIfFalse(vkAllocateCommandBuffers(_device, &alloc_info, _cmd_buffers.data()) == VK_SUCCESS);
+
+		return true;
+	}
+
 }

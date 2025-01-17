@@ -51,13 +51,15 @@ namespace fantasy
     }
 
 
-namespace shader_compile
-{
-    namespace
+
+    Slang::ComPtr<slang::IGlobalSession> global_session;
+    ShaderPlatform platform = ShaderPlatform::SPIRV;
+
+    void set_shader_platform(ShaderPlatform in_platform)
     {
-        Slang::ComPtr<slang::IGlobalSession> global_session;
-        ShaderPlatform platform = ShaderPlatform::SPIRV;
+        platform = in_platform;
     }
+
 
     ShaderData compile_shader(const ShaderCompileDesc& desc)
     { 
@@ -82,13 +84,13 @@ namespace shader_compile
             return load_from_cache(cache_path.c_str());
         }
 
-		size_t pos = shader_path.find_last_of('/');
-		if (pos == std::string::npos)
-		{
-			LOG_ERROR("Find hlsl file's Directory failed.");
-			return ShaderData{};
-		}
-		const std::string file_directory = shader_path.substr(0, pos);
+        size_t pos = shader_path.find_last_of('/');
+        if (pos == std::string::npos)
+        {
+            LOG_ERROR("Find hlsl file's Directory failed.");
+            return ShaderData{};
+        }
+        const std::string file_directory = shader_path.substr(0, pos);
 
 
         slang::SessionDesc session_desc{};
@@ -201,7 +203,6 @@ namespace shader_compile
 
         return shader_data;
     }
-}
 }
 
 
