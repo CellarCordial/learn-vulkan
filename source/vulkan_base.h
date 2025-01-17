@@ -48,16 +48,23 @@ namespace fantasy
 		bool destroy_debug_utils_messager();
 
 		bool pick_physical_device();
-		bool find_queue_family(auto& physical_device);
+		bool find_queue_family(const auto& physical_device);
 
 		bool create_device();
+		bool create_swapchain();
+		bool load_shader();
+
+		bool check_device_extension(const auto& physical_device);
+		bool check_swapchain_support(const auto& physical_device);
 
 	private:
+		GlfwWindow _window;
+
 		VkInstance _instance;
 
 		VkDebugUtilsMessengerEXT _debug_messager;
 		std::vector<const char*> _validation_layers;
-		std::vector<const char*> _extensions;
+		std::vector<const char*> _instance_extensions;
 		VkDebugUtilsMessengerEXT _debug_callback;
 
 		// VkSurfaceKHR 对象是平台无关的, 但它的创建依赖窗口系统.
@@ -68,7 +75,7 @@ namespace fantasy
 		// 这里使用 glfw, 故直接用 glfwCreateWindowSurface() 函数获取 surface.
 		VkSurfaceKHR _surface;
 
-
+		std::vector<const char*> _device_extensions;
 		VkPhysicalDevice _physical_device = VK_NULL_HANDLE;
 
 
@@ -86,7 +93,17 @@ namespace fantasy
 		VkQueue _graphics_queue;
 		VkQueue _present_queue;
 
-		GlfwWindow _window;
+
+		struct
+		{
+			VkSurfaceCapabilitiesKHR surface_capabilities;
+			std::vector<VkSurfaceFormatKHR> surface_formats;
+			std::vector<VkPresentModeKHR> present_modes;
+		} _swapchain_info;
+
+		VkSwapchainKHR _swapchain;
+		std::vector<VkImage> _back_buffers;
+		std::vector<VkImageView> _back_buffer_views;
 	};
 }
 
