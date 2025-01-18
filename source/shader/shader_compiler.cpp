@@ -104,7 +104,7 @@ namespace fantasy
             break;
         case ShaderPlatform::SPIRV:
             target_desc.format = SLANG_SPIRV;
-            target_desc.profile = global_session->findProfile("glsl_450");
+            target_desc.profile = global_session->findProfile("spirv_1_0");
             break;        
         }
         

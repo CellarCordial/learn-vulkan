@@ -10,6 +10,7 @@
 #endif
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <fstream>
 
 #include "glfw_window.h"
 #include "../source/core/math/common.h"
@@ -38,6 +39,25 @@ namespace fantasy
 			destroy();
 			return true;
 		}
+
+	static std::vector<char> readFile(const std::string& filename) 
+	{
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+        if (!file.is_open()) {
+            throw std::runtime_error("failed to open file!");
+        }
+
+        size_t fileSize = (size_t) file.tellg();
+        std::vector<char> buffer(fileSize);
+
+        file.seekg(0);
+        file.read(buffer.data(), fileSize);
+
+        file.close();
+
+        return buffer;
+    }
 
 	private:
 		bool initialize();
@@ -118,7 +138,6 @@ namespace fantasy
 		VkFormat _swapchain_format;
 		std::vector<VkImage> _back_buffers;
 		std::vector<VkImageView> _back_buffer_views;
-		uint32_t _current_back_buffer_index = 0;
 
 		VkViewport _viewport;
 		VkRect2D _scissor;
@@ -130,11 +149,11 @@ namespace fantasy
 		std::vector<VkFramebuffer> _frame_buffers;
 
 		VkCommandPool _cmd_pool;
-		std::vector<VkCommandBuffer> _cmd_buffers;
+		VkCommandBuffer _cmd_buffer;
 
-		std::vector<VkSemaphore> _back_buffer_avaible_semaphores;
-		std::vector<VkSemaphore> _render_finished_semaphores;
-		std::vector<VkFence> _fences;
+		VkSemaphore _back_buffer_avaible_semaphore;
+		VkSemaphore _render_finished_semaphore;
+		VkFence _fence;
 	};
 }
 
