@@ -2,7 +2,9 @@
 #define VULKAN_BASE_H
 
 
+#include "core/tools/log.h"
 #include "vulkan/vulkan_core.h"
+#include <cstdint>
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
@@ -28,7 +30,9 @@ namespace fantasy
 				glfwPollEvents();
 				render_loop();
 				_window.title_fps();
+
 			}
+			ReturnIfFalse(vkDeviceWaitIdle(_device) == VK_SUCCESS);
 
 			_window.terminate_window();
 			destroy();
@@ -60,7 +64,10 @@ namespace fantasy
 		bool create_frame_buffer();
 		bool create_command_pool();
 		bool create_command_buffer();
-		bool record_command();
+		bool record_command(uint32_t cmd_buffer_index);
+		bool create_sync_objects();
+
+		bool draw();
 
 	private:
 		GlfwWindow _window;
@@ -111,6 +118,10 @@ namespace fantasy
 		VkFormat _swapchain_format;
 		std::vector<VkImage> _back_buffers;
 		std::vector<VkImageView> _back_buffer_views;
+		uint32_t _current_back_buffer_index = 0;
+
+		VkViewport _viewport;
+		VkRect2D _scissor;
 
 		VkPipelineLayout _layout;
 		VkRenderPass _render_pass;
@@ -120,6 +131,10 @@ namespace fantasy
 
 		VkCommandPool _cmd_pool;
 		std::vector<VkCommandBuffer> _cmd_buffers;
+
+		std::vector<VkSemaphore> _back_buffer_avaible_semaphores;
+		std::vector<VkSemaphore> _render_finished_semaphores;
+		std::vector<VkFence> _fences;
 	};
 }
 

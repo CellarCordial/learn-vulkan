@@ -41,6 +41,9 @@ namespace fantasy
 		ReturnIfFalse(create_swapchain());
 		ReturnIfFalse(create_pipeline());
 		ReturnIfFalse(create_frame_buffer());
+		ReturnIfFalse(create_command_pool());
+		ReturnIfFalse(create_command_buffer());
+		ReturnIfFalse(create_sync_objects());
 		return true;
 	}
 
@@ -50,6 +53,12 @@ namespace fantasy
 #ifdef DEBUG
 		ReturnIfFalse(destroy_debug_utils_messager());
 #endif
+		for (uint32_t ix = 0; ix < NUM_FRAMES_IN_FLIGHT; ++ix)
+		{
+			vkDestroySemaphore(_device, _back_buffer_avaible_semaphores[ix], nullptr);
+			vkDestroySemaphore(_device, _render_finished_semaphores[ix], nullptr);
+			vkDestroyFence(_device, _fences[ix], nullptr);
+		}
 		vkDestroyCommandPool(_device, _cmd_pool, nullptr);
 		for (const auto& frame_buffer : _frame_buffers) vkDestroyFramebuffer(_device, frame_buffer, nullptr);
 		vkDestroyPipeline(_device, _graphics_pipeline, nullptr);
@@ -65,7 +74,7 @@ namespace fantasy
 
 	bool VulkanBase::render_loop()
 	{
-		return true;
+		return draw();
 	}
 
 	bool VulkanBase::create_instance()
@@ -592,25 +601,23 @@ namespace fantasy
 		// (从特殊索引值之后的索引重置为图元的第一个顶点).
 		input_assembly_create_info.primitiveRestartEnable = VK_FALSE;
 
-		VkViewport viewport;
-		viewport.x = 0.0f;
-		viewport.y = 0.0f;
-		viewport.width = _client_resolution.width;
-		viewport.height = _client_resolution.height;
-		viewport.minDepth = 0.0f;
-		viewport.maxDepth = 1.0f;
+		_viewport.x = 0.0f;
+		_viewport.y = 0.0f;
+		_viewport.width = _client_resolution.width;
+		_viewport.height = _client_resolution.height;
+		_viewport.minDepth = 0.0f;
+		_viewport.maxDepth = 1.0f;
 
-		VkRect2D scissor;
-		scissor.offset = { 0, 0 };
-		scissor.extent = { _client_resolution.width, _client_resolution.height };
+		_scissor.offset = { 0, 0 };
+		_scissor.extent = { _client_resolution.width, _client_resolution.height };
 
 		// 使用多个视口和裁剪矩形需要启用特性 VkPhysicalDeviceFeatures.multiViewport.
 		VkPipelineViewportStateCreateInfo viewport_create_info{};
 		viewport_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 		viewport_create_info.viewportCount = 1;
-		viewport_create_info.pViewports = &viewport;
+		viewport_create_info.pViewports = &_viewport;
 		viewport_create_info.scissorCount = 1;
-		viewport_create_info.pScissors = &scissor;
+		viewport_create_info.pScissors = &_scissor;
 
 		VkPipelineRasterizationStateCreateInfo raster_create_info{};
 		raster_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -679,7 +686,7 @@ namespace fantasy
 		// 只有非常有限的管线状态可以在不重建管线的情况下进行动态修改.
 		// 这包括视口大小, 线宽和混合常量 (VkPipelineColorBlendStateCreateInfo.blendConstants).
 		VkDynamicState dynamic_state[2] = {
-			VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_LINE_WIDTH
+			VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR
 		};
 		// 这样设置后会导致我们之前对这里使用的动态状态的设置被忽略掉, 需要我们在进行绘制时重新指定它们的值.
 		VkPipelineDynamicStateCreateInfo dynamic_state_create_info{};
@@ -786,6 +793,22 @@ namespace fantasy
 		// pDepthStencilAttachment: 用于深度和模板数据的附着.
 		// pPreserveAttachments: 没有被这一子流程使用，但需要保留数据的附着.
 
+		VkSubpassDependency subpass_dependency{};
+		subpass_dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+		subpass_dependency.dstSubpass = 0;
+
+		// srcStageMask 和 srcAccessMask 成员变量用于指定需要等待的管线阶段和子流程将进行的操作类型.
+		// 我们需要等待交换链结束对图像的读取才能对图像进行访问操作, 也就是等待颜色附着输出这一管线阶段.
+		subpass_dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		subpass_dependency.srcAccessMask = 0;
+
+		// dstStageMask 和 dstAccessMask 成员变量用于指定需要等待的管线阶段和子流程将进行的操作类型.
+		// 在这里, 我们的设置为等待颜色附着的输出阶段, 子流程将会进行颜色附着的读写操作.
+		// 这样设置后，图像布局变换 (也就是 resource state barrier)直到开始写入颜色数据时时才会进行.
+		subpass_dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		subpass_dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+
 		// 需要把各个 VkAttachmentDescription 都放进来, 然后 VkSubpassDescription 会根据其 colorAttachmentCount 索引
 		// 使用这些 VkAttachmentDescription, 所有 VkSubpassDescription 也放进来, VkSubpassDependency 则会索引他们
 		// 根据依赖排列 pass 的执行顺序.
@@ -798,8 +821,8 @@ namespace fantasy
 		render_pass_create_info.pSubpasses = &subpass;
 
 		// VkSubpassDependency 用于定义渲染流程中不同子流程（Subpass）之间的依赖关系
-		// render_pass_create_info.dependencyCount
-		// render_pass_create_info.pDependencies
+		render_pass_create_info.dependencyCount = 1;
+		render_pass_create_info.pDependencies = &subpass_dependency;
 
 		return vkCreateRenderPass(_device, &render_pass_create_info, nullptr, &_render_pass) == VK_SUCCESS;
 	}
@@ -834,10 +857,10 @@ namespace fantasy
 		VkCommandPoolCreateInfo create_info{};
 		create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 		create_info.queueFamilyIndex = _queue_family_index.graphics_index;
-		create_info.flags = 0;
+		create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 		// VK_COMMAND_POOL_CREATE_TRANSIENT_BIT: 使用它分配的
 		// 指令缓冲对象被频繁用来记录新的指令 (使用这一标记可能会改变帧缓冲对象的内存分配策略).
-		// VK COMMAND POOL CREATE RESET COMMAND BUFFER BIT: 
+		// VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: 
 		// 指令缓冲对象之间相互独立, 不会被一起重置, 不使用这一标记, 指令缓冲对象会被放在一起重置.
 
 		return vkCreateCommandPool(_device, &create_info, nullptr, &_cmd_pool) == VK_SUCCESS;
@@ -851,11 +874,138 @@ namespace fantasy
 		alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		alloc_info.commandPool = _cmd_pool;
 
-		// VK_COMMAND_BUFFER_LEVEL_PRIMARY: 可以被提交到队列进行执行, 但不能被其它指令缓冲对象调用。
-		// VK_COMMAND_BUFFER_LEVEL_SECONDARY: 不能直接被提交到队列进行执行, 但可以被主要指令缓冲对象调用执行
+		// VK_COMMAND_BUFFER_LEVEL_PRIMARY: 可以被提交到队列进行执行, 但不能被其它指令缓冲对象调用.
+		// VK_COMMAND_BUFFER_LEVEL_SECONDARY: 不能直接被提交到队列进行执行, 但可以被主要指令缓冲对象调用执行.
 		alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		alloc_info.commandBufferCount = static_cast<uint32_t>(_cmd_buffers.size());
 		ReturnIfFalse(vkAllocateCommandBuffers(_device, &alloc_info, _cmd_buffers.data()) == VK_SUCCESS);
+
+		return true;
+	}
+
+	bool VulkanBase::record_command(uint32_t cmd_buffer_index)
+	{
+		VkCommandBufferBeginInfo cmd_buffer_begin{};
+		cmd_buffer_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		cmd_buffer_begin.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		// VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: 指令缓冲在执行一次后, 就被用来记录新的指令.
+		// VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT: 这是一个只在一个渲染流程内使用的辅助指令缓冲.
+		// VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT: 在指令缓冲等待执行时, 仍然可以提交这一指令缓冲.
+
+		ReturnIfFalse(vkBeginCommandBuffer(_cmd_buffers[cmd_buffer_index], &cmd_buffer_begin) == VK_SUCCESS);
+
+		VkRenderPassBeginInfo render_pass_begin_info{};
+		render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		render_pass_begin_info.renderPass = _render_pass;
+		render_pass_begin_info.framebuffer = _frame_buffers[cmd_buffer_index];
+		render_pass_begin_info.renderArea.offset = { 0, 0 };
+		render_pass_begin_info.renderArea.extent = _client_resolution;
+
+		// 多个 render target 就指定多个 clear value.
+		VkClearValue clear_value = { 0.0f, 0.0f, 0.0f, 1.0f };
+		render_pass_begin_info.clearValueCount = 1;
+		render_pass_begin_info.pClearValues = &clear_value;
+
+		// VK_SUBPASS_CONTENTS_INLINE: 所有要执行的指令都在主要指令缓冲中, 没有辅助指令缓冲需要执行.
+		// VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS: 有来自辅助指令缓冲的指令需要执行.
+		vkCmdBeginRenderPass(_cmd_buffers[cmd_buffer_index], &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(_cmd_buffers[cmd_buffer_index], VK_PIPELINE_BIND_POINT_GRAPHICS, _graphics_pipeline);
+		vkCmdSetViewport(_cmd_buffers[cmd_buffer_index], 0, 1, &_viewport);
+		vkCmdSetScissor(_cmd_buffers[cmd_buffer_index], 0, 1, &_scissor);
+		vkCmdDraw(_cmd_buffers[cmd_buffer_index], 3, 1, 0, 0);
+
+		vkCmdEndRenderPass(_cmd_buffers[cmd_buffer_index]);
+
+
+		return vkEndCommandBuffer(_cmd_buffers[cmd_buffer_index]) == VK_SUCCESS;
+	}
+
+	bool VulkanBase::create_sync_objects()
+	{
+		_back_buffer_avaible_semaphores.resize(NUM_FRAMES_IN_FLIGHT);
+		_render_finished_semaphores.resize(NUM_FRAMES_IN_FLIGHT);
+		_fences.resize(NUM_FRAMES_IN_FLIGHT);
+
+		VkSemaphoreCreateInfo create_info{};
+		create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+		VkFenceCreateInfo fence_create_info{};
+		fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+		//默认情况下, fence 在创建后是未发出信号的状态, 这就意味着如果没有在 vkWaitForFences 函数调用之前
+		// 发出 fence 信号, vkWaitForFences 函数调用将会一直处于等待状态, 所以设置其初始状态为已发出信号.
+		fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+		
+		for (uint32_t ix = 0; ix < NUM_FRAMES_IN_FLIGHT; ++ix)
+		{
+			ReturnIfFalse(
+				vkCreateSemaphore(_device, &create_info, nullptr, &_back_buffer_avaible_semaphores[ix]) == VK_SUCCESS &&
+				vkCreateSemaphore(_device, &create_info, nullptr, &_render_finished_semaphores[ix]) == VK_SUCCESS &&
+				vkCreateFence(_device, &fence_create_info, nullptr, &_fences[ix]) == VK_SUCCESS
+			)
+		}
+		return true;
+	}
+
+
+	bool VulkanBase::draw()
+	{
+		ReturnIfFalse(vkWaitForFences(_device, 1, &_fences[_current_back_buffer_index], VK_TRUE, INVALID_SIZE_64) == VK_SUCCESS);
+		ReturnIfFalse(vkResetFences(_device, 1, &_fences[_current_back_buffer_index]) == VK_SUCCESS);
+
+		uint32_t back_buffer_index = 0;
+		ReturnIfFalse(VK_SUCCESS == vkAcquireNextImageKHR(
+			_device, 
+			_swapchain, 
+			INVALID_SIZE_64, 
+			_back_buffer_avaible_semaphores[_current_back_buffer_index], 
+			VK_NULL_HANDLE, 
+			&back_buffer_index
+		));
+
+		ReturnIfFalse(vkResetCommandBuffer(_cmd_buffers[back_buffer_index], 0) == VK_SUCCESS);
+        ReturnIfFalse(record_command(back_buffer_index));
+
+		VkSubmitInfo submit_info{};
+		submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+		VkSemaphore wait_semaphores[] = { _back_buffer_avaible_semaphores[_current_back_buffer_index] };
+
+		// 指定等待的管线阶段.
+		VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+
+		submit_info.waitSemaphoreCount = 1;
+		submit_info.pWaitSemaphores = wait_semaphores;
+		submit_info.pWaitDstStageMask = wait_stages;
+		submit_info.commandBufferCount = 1;
+		submit_info.pCommandBuffers = &_cmd_buffers[back_buffer_index];
+
+		VkSemaphore signal_semaphores[] = { _render_finished_semaphores[_current_back_buffer_index] };
+		
+		submit_info.signalSemaphoreCount = 1;
+		submit_info.pSignalSemaphores = signal_semaphores;
+
+		ReturnIfFalse(vkQueueSubmit(_graphics_queue, 1, &submit_info, _fences[_current_back_buffer_index]) == VK_SUCCESS);
+
+		// 开始交换链的 present.
+
+		VkPresentInfoKHR present_info{};
+		present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+		present_info.waitSemaphoreCount = 1;
+		present_info.pWaitSemaphores = signal_semaphores;
+
+		VkSwapchainKHR swapchains[] = { _swapchain };
+		present_info.swapchainCount = 1;
+		present_info.pSwapchains = swapchains;
+		present_info.pImageIndices = &back_buffer_index;
+
+		// 我们可以通过pResults成员变量获取每个交换链的呈现操作是否成功的信息.
+		// 由于只使用了一个交换链, 可以直接使用呈现函数的返回值来判断呈现操作是否成功, 没有必要使用 pResults.
+		present_info.pResults = nullptr;
+
+		ReturnIfFalse(vkQueuePresentKHR(_present_queue, &present_info) == VK_SUCCESS);
+		_current_back_buffer_index = (_current_back_buffer_index + 1) % NUM_FRAMES_IN_FLIGHT;
 
 		return true;
 	}
