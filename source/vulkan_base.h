@@ -87,6 +87,8 @@ namespace fantasy
 		bool record_command(uint32_t cmd_buffer_index);
 		bool create_sync_objects();
 
+		bool resize_window();
+
 		bool draw();
 
 	private:

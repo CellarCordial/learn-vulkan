@@ -992,4 +992,15 @@ namespace fantasy
 		return true;
 	}
 
+    bool VulkanBase::resize_window()
+    {
+        ReturnIfFalse(vkDeviceWaitIdle(_device) == VK_SUCCESS);
+
+        ReturnIfFalse(create_swapchain());
+        ReturnIfFalse(create_pipeline());
+        ReturnIfFalse(create_frame_buffer());
+        ReturnIfFalse(create_command_buffer());
+        return true;
+    }
+
 }
