@@ -22,8 +22,17 @@ namespace fantasy
 		return VK_FALSE;
 	}
 
+	void window_resize_callback(GLFWwindow* window, int width, int height) 
+	{
+        VulkanBase* app = reinterpret_cast<VulkanBase*>(glfwGetWindowUserPointer(window));
+        app->window_resized = true;
+    }
+
 	bool VulkanBase::initialize()
 	{
+		glfwSetWindowUserPointer(_window.get_window(), this);
+		glfwSetFramebufferSizeCallback(_window.get_window(), window_resize_callback);
+
 		set_shader_platform(ShaderPlatform::SPIRV);
 
 		ReturnIfFalse(create_instance());
@@ -56,13 +65,15 @@ namespace fantasy
 		vkDestroySemaphore(_device, _back_buffer_avaible_semaphore, nullptr);
 		vkDestroySemaphore(_device, _render_finished_semaphore, nullptr);
 		vkDestroyFence(_device, _fence, nullptr);
+
+		clean_up_swapchain();
+		
+		vkFreeCommandBuffers(_device, _cmd_pool, 1, &_cmd_buffer);
 		vkDestroyCommandPool(_device, _cmd_pool, nullptr);
-		for (const auto& frame_buffer : _frame_buffers) vkDestroyFramebuffer(_device, frame_buffer, nullptr);
 		vkDestroyPipeline(_device, _graphics_pipeline, nullptr);
 		vkDestroyPipelineLayout(_device, _layout, nullptr);
 		vkDestroyRenderPass(_device, _render_pass, nullptr);
-		for (const auto& view : _back_buffer_views) vkDestroyImageView(_device, view, nullptr);
-		vkDestroySwapchainKHR(_device, _swapchain, nullptr);
+
 		vkDestroySurfaceKHR(_instance, _surface, nullptr);
 		vkDestroyDevice(_device, nullptr);
 		vkDestroyInstance(_instance, nullptr);
@@ -379,6 +390,7 @@ namespace fantasy
 		// 确定缓冲区个数.
 		// 若 maxImageCount 的值为 0 表明，只要内存可以满足，我们可以使用任意数量的图像.
 		uint32_t frames_in_flight_count = std::min(_swapchain_info.surface_capabilities.minImageCount + 1, NUM_FRAMES_IN_FLIGHT);
+		
 		if (
 			_swapchain_info.surface_capabilities.maxImageCount > 0 &&
 			frames_in_flight_count > _swapchain_info.surface_capabilities.maxImageCount
@@ -432,31 +444,8 @@ namespace fantasy
 		}
 
 		// 确定缓冲区分辨率.
-
-		// 这里确保分辨率可以为任意值. (当 surface_capabilities.currentExtent 为 INVALID_SIZE_32, 即分辨率可以为任意值).
-		if (_swapchain_info.surface_capabilities.currentExtent.width != INVALID_SIZE_32)
-		{
-			swapchain_create_info.imageExtent = _swapchain_info.surface_capabilities.currentExtent;
-		}
-		else
-		{
-			VkExtent2D extent = { CLIENT_WIDTH, CLIENT_HEIGHT };
-			swapchain_create_info.imageExtent.width = std::max(
-				_swapchain_info.surface_capabilities.minImageExtent.width, 
-				std::min(
-					extent.width, 
-					_swapchain_info.surface_capabilities.maxImageExtent.width
-				)
-			);
-			swapchain_create_info.imageExtent.height = std::max(
-				_swapchain_info.surface_capabilities.minImageExtent.height, 
-				std::min(
-					extent.height, 
-					_swapchain_info.surface_capabilities.maxImageExtent.height
-				)
-			);
-		}
-		_client_resolution = swapchain_create_info.imageExtent;
+		ReturnIfFalse(update_client_resolution());
+		swapchain_create_info.imageExtent = _client_resolution;
 
 		// imageArrayLayers 成员变量用于指定每个图像所包含的层次. 
 		// 通常, 来说它的值为 1. 但对于 VR 相关的应用程序来说, 会使用更多的层次.
@@ -935,17 +924,29 @@ namespace fantasy
 	bool VulkanBase::draw()
 	{
 		ReturnIfFalse(vkWaitForFences(_device, 1, &_fence, VK_TRUE, INVALID_SIZE_64) == VK_SUCCESS);
-		ReturnIfFalse(vkResetFences(_device, 1, &_fence) == VK_SUCCESS);
 
 		uint32_t back_buffer_index = 0;
-		ReturnIfFalse(VK_SUCCESS == vkAcquireNextImageKHR(
+		VkResult result = vkAcquireNextImageKHR(
 			_device, 
 			_swapchain, 
 			INVALID_SIZE_64, 
 			_back_buffer_avaible_semaphore, 
 			VK_NULL_HANDLE, 
 			&back_buffer_index
-		));
+		);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR)
+		{
+			recreate_swapchain();
+			return true;
+		}
+		else if (result != VK_SUCCESS)
+		{
+			LOG_ERROR("vkAcquireNextImageKHR() called failed.");
+			return false;
+		}
+
+		vkResetFences(_device, 1, &_fence); 
 
 		ReturnIfFalse(vkResetCommandBuffer(_cmd_buffer, 0) == VK_SUCCESS);
         ReturnIfFalse(record_command(back_buffer_index));
@@ -987,20 +988,74 @@ namespace fantasy
 		// 由于只使用了一个交换链, 可以直接使用呈现函数的返回值来判断呈现操作是否成功, 没有必要使用 pResults.
 		present_info.pResults = nullptr;
 
-		ReturnIfFalse(vkQueuePresentKHR(_present_queue, &present_info) == VK_SUCCESS);
+		result = vkQueuePresentKHR(_present_queue, &present_info);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || window_resized)
+		{
+			window_resized = false;
+			recreate_swapchain();
+		}
+		else if (result != VK_SUCCESS)
+		{
+			LOG_ERROR("vkAcquireNextImageKHR() called failed.");
+			return false;
+		}
+
 
 		return true;
 	}
 
-    bool VulkanBase::resize_window()
-    {
-        ReturnIfFalse(vkDeviceWaitIdle(_device) == VK_SUCCESS);
+	void VulkanBase::clean_up_swapchain()
+	{
+		for (uint32_t ix = 0; ix < _frame_buffers.size(); ++ix)
+		{
+			vkDestroyFramebuffer(_device, _frame_buffers[ix], nullptr);
+		}
 
-        ReturnIfFalse(create_swapchain());
-        ReturnIfFalse(create_pipeline());
-        ReturnIfFalse(create_frame_buffer());
-        ReturnIfFalse(create_command_buffer());
-        return true;
+
+		for (uint32_t ix = 0; ix < _back_buffer_views.size(); ++ix)
+		{
+			vkDestroyImageView(_device, _back_buffer_views[ix], nullptr);
+		}
+
+		vkDestroySwapchainKHR(_device, _swapchain, nullptr);
+	}
+
+	bool VulkanBase::update_client_resolution()
+	{
+		// 这里确保分辨率可以为任意值. (当 surface_capabilities.currentExtent 为 INVALID_SIZE_32, 即分辨率可以为任意值).
+		VkSurfaceCapabilitiesKHR surface_capabilities;
+		ReturnIfFalse(VK_SUCCESS == vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+			_physical_device, 
+			_surface, &surface_capabilities
+		));
+		if (surface_capabilities.currentExtent.width != INVALID_SIZE_32)
+		{
+			_client_resolution = surface_capabilities.currentExtent;
+		}
+		else
+		{
+			int width, height;
+ 			glfwGetFramebufferSize(_window.get_window(), &width, &height);
+
+			_client_resolution = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
+		}
+	}
+
+    bool VulkanBase::recreate_swapchain() 
+	{
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(_window.get_window(), &width, &height);
+        while (width == 0 || height == 0) 
+		{
+            glfwGetFramebufferSize(_window.get_window(), &width, &height);
+            glfwWaitEvents();
+        }
+
+        vkDeviceWaitIdle(_device);
+
+        clean_up_swapchain();
+
+		return create_swapchain() && create_frame_buffer();
     }
-
 }

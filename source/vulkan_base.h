@@ -10,10 +10,9 @@
 #endif
 #include <vulkan/vulkan.h>
 #include <vector>
-#include <fstream>
-
 #include "glfw_window.h"
 #include "../source/core/math/common.h"
+
 
 namespace fantasy
 {
@@ -35,29 +34,12 @@ namespace fantasy
 			}
 			ReturnIfFalse(vkDeviceWaitIdle(_device) == VK_SUCCESS);
 
-			_window.terminate_window();
 			destroy();
+			_window.terminate_window();
 			return true;
 		}
 
-	static std::vector<char> readFile(const std::string& filename) 
-	{
-        std::ifstream file(filename, std::ios::ate | std::ios::binary);
-
-        if (!file.is_open()) {
-            throw std::runtime_error("failed to open file!");
-        }
-
-        size_t fileSize = (size_t) file.tellg();
-        std::vector<char> buffer(fileSize);
-
-        file.seekg(0);
-        file.read(buffer.data(), fileSize);
-
-        file.close();
-
-        return buffer;
-    }
+		bool window_resized = false;
 
 	private:
 		bool initialize();
@@ -87,10 +69,14 @@ namespace fantasy
 		bool record_command(uint32_t cmd_buffer_index);
 		bool create_sync_objects();
 
-		bool resize_window();
+		void clean_up_swapchain();
+		bool update_client_resolution();
+		bool recreate_swapchain();
 
 		bool draw();
 
+
+	
 	private:
 		GlfwWindow _window;
 
@@ -156,6 +142,7 @@ namespace fantasy
 		VkSemaphore _back_buffer_avaible_semaphore;
 		VkSemaphore _render_finished_semaphore;
 		VkFence _fence;
+
 	};
 }
 
