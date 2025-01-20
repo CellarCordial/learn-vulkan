@@ -937,7 +937,7 @@ namespace fantasy
 
 		if (result == VK_ERROR_OUT_OF_DATE_KHR)
 		{
-			recreate_swapchain();
+			ReturnIfFalse(recreate_swapchain());
 			return true;
 		}
 		else if (result != VK_SUCCESS)
@@ -993,7 +993,7 @@ namespace fantasy
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || window_resized)
 		{
 			window_resized = false;
-			recreate_swapchain();
+			ReturnIfFalse(recreate_swapchain());
 		}
 		else if (result != VK_SUCCESS)
 		{
@@ -1040,6 +1040,7 @@ namespace fantasy
 
 			_client_resolution = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
 		}
+		return true;
 	}
 
     bool VulkanBase::recreate_swapchain() 
