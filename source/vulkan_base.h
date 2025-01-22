@@ -118,6 +118,15 @@ namespace fantasy
 
 		bool create_vertex_buffer();
 		bool create_index_buffer();
+		bool create_buffer(
+			VkDeviceSize size, 
+			VkBufferUsageFlags usage, 
+			VkMemoryPropertyFlags properties, 
+			VkBuffer& buffer, 
+			VkDeviceMemory& buffer_memory
+		);
+
+		bool copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size);
 
 		bool draw();
 

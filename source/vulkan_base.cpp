@@ -1089,32 +1089,35 @@ namespace fantasy
 
 	bool VulkanBase::create_vertex_buffer()
 	{
-		VkBufferCreateInfo buffer_info{};
-		buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		buffer_info.size = sizeof(Vertex) * vertices.size();
-		buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-		buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VkDeviceSize vertex_buffer_size = sizeof(Vertex) * vertices.size();
 
-		ReturnIfFalse(vkCreateBuffer(_device, &buffer_info, nullptr, &_vertex_buffer) == VK_SUCCESS); 
-
-		VkMemoryRequirements memory_requirements;
-		vkGetBufferMemoryRequirements(_device, _vertex_buffer, &memory_requirements);
-
-		VkMemoryAllocateInfo allocate_info{};
-		allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocate_info.allocationSize = memory_requirements.size;
-		allocate_info.memoryTypeIndex = get_memory_type(
-			memory_requirements.memoryTypeBits, 
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-		);
-
-		ReturnIfFalse(vkAllocateMemory(_device, &allocate_info, nullptr, &_vertex_buffer_memory) == VK_SUCCESS);
-		ReturnIfFalse(vkBindBufferMemory(_device, _vertex_buffer, _vertex_buffer_memory, 0) == VK_SUCCESS);
+		VkBuffer staging_buffer;
+		VkDeviceMemory staging_memory;
+		ReturnIfFalse(create_buffer(
+			vertex_buffer_size, 
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+			staging_buffer, 
+			staging_memory
+		));
 
 		void* vertex_data = nullptr;
-		vkMapMemory(_device, _vertex_buffer_memory, 0, buffer_info.size, 0, &vertex_data);
+		vkMapMemory(_device, staging_memory, 0, vertex_buffer_size, 0, &vertex_data);
 		memcpy(vertex_data, vertices.data(), vertices.size() * sizeof(Vertex));
-		vkUnmapMemory(_device, _vertex_buffer_memory);
+		vkUnmapMemory(_device, staging_memory);
+
+		ReturnIfFalse(create_buffer(
+			vertex_buffer_size, 
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+			_vertex_buffer, 
+			_vertex_buffer_memory
+		));
+
+		ReturnIfFalse(copy_buffer(_vertex_buffer, staging_buffer, vertex_buffer_size));
+
+		vkDestroyBuffer(_device, staging_buffer, nullptr);
+		vkFreeMemory(_device, staging_memory, nullptr);
 
 		return true;
 	}
@@ -1123,5 +1126,73 @@ namespace fantasy
 	{
 		return true;
 	}
+
+	bool VulkanBase::create_buffer(
+			VkDeviceSize size, 
+			VkBufferUsageFlags usage, 
+			VkMemoryPropertyFlags properties, 
+			VkBuffer& buffer, 
+			VkDeviceMemory& buffer_memory
+		)
+	{
+		VkBufferCreateInfo buffer_info{};
+		buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		buffer_info.size = size;
+		buffer_info.usage = usage;
+		buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		ReturnIfFalse(vkCreateBuffer(_device, &buffer_info, nullptr, &buffer) == VK_SUCCESS); 
+
+		VkMemoryRequirements memory_requirements;
+		vkGetBufferMemoryRequirements(_device, buffer, &memory_requirements);
+
+		VkMemoryAllocateInfo allocate_info{};
+		allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocate_info.allocationSize = memory_requirements.size;
+		allocate_info.memoryTypeIndex = get_memory_type(
+			memory_requirements.memoryTypeBits, 
+			properties
+		);
+		ReturnIfFalse(vkAllocateMemory(_device, &allocate_info, nullptr, &buffer_memory) == VK_SUCCESS);
+		ReturnIfFalse(vkBindBufferMemory(_device, buffer, buffer_memory, 0) == VK_SUCCESS);
+
+		return true;
+	}
+
+	bool VulkanBase::copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size)
+	{
+		VkCommandBufferAllocateInfo cmd_buffer_alloc_info{};
+        cmd_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmd_buffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmd_buffer_alloc_info.commandPool = _cmd_pool;
+        cmd_buffer_alloc_info.commandBufferCount = 1;
+
+		VkCommandBuffer cmd_buffer;
+		ReturnIfFalse(vkAllocateCommandBuffers(_device, &cmd_buffer_alloc_info, &cmd_buffer) == VK_SUCCESS);
+		
+		VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		ReturnIfFalse(vkBeginCommandBuffer(cmd_buffer, &begin_info) == VK_SUCCESS);
+
+		VkBufferCopy copy_region{};
+		copy_region.size = size;
+
+		vkCmdCopyBuffer(cmd_buffer, src_buffer, dst_buffer, 1, &copy_region);
+
+		ReturnIfFalse(vkEndCommandBuffer(cmd_buffer) == VK_SUCCESS);
+
+		VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &cmd_buffer;
+
+        ReturnIfFalse(vkQueueSubmit(_graphics_queue, 1, &submit_info, VK_NULL_HANDLE) == VK_SUCCESS);
+        ReturnIfFalse(vkQueueWaitIdle(_graphics_queue) == VK_SUCCESS);
+
+        vkFreeCommandBuffers(_device, _cmd_pool, 1, &cmd_buffer);
+		return true;
+	}
+
 
 }
