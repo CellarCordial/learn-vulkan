@@ -1,6 +1,7 @@
 #include "vulkan_base.h"
 #include "../source/core/tools/log.h"
 #include <cstdint>
+#include <cstring>
 #include <minwindef.h>
 #include <set>
 #include <vector>
@@ -53,15 +54,15 @@ namespace fantasy
 		ReturnIfFalse(create_command_pool());
 		ReturnIfFalse(create_command_buffer());
 		ReturnIfFalse(create_sync_objects());
+		ReturnIfFalse(create_vertex_buffer());
 		return true;
 	}
 
 
 	bool VulkanBase::destroy()
 	{
-#ifdef DEBUG
-		ReturnIfFalse(destroy_debug_utils_messager());
-#endif
+		vkDestroyBuffer(_device, _vertex_buffer, nullptr);
+		vkFreeMemory(_device, _vertex_buffer_memory, nullptr);
 		vkDestroySemaphore(_device, _back_buffer_avaible_semaphore, nullptr);
 		vkDestroySemaphore(_device, _render_finished_semaphore, nullptr);
 		vkDestroyFence(_device, _fence, nullptr);
@@ -74,6 +75,9 @@ namespace fantasy
 		vkDestroyPipelineLayout(_device, _layout, nullptr);
 		vkDestroyRenderPass(_device, _render_pass, nullptr);
 
+#ifdef DEBUG
+		ReturnIfFalse(destroy_debug_utils_messager());
+#endif
 		vkDestroySurfaceKHR(_instance, _surface, nullptr);
 		vkDestroyDevice(_device, nullptr);
 		vkDestroyInstance(_instance, nullptr);
@@ -240,6 +244,8 @@ namespace fantasy
 			)
 			{
 				_physical_device = device;
+				vkGetPhysicalDeviceMemoryProperties(_physical_device, &_memory_properties);
+
 				break;
 			}
 		}
@@ -571,12 +577,15 @@ namespace fantasy
 			vs_stage_create_info, ps_stage_create_info
 		};
 
+		auto vertex_input_binding = Vertex::get_input_binding_description();
+		auto vertex_input_attribute = Vertex::get_input_attribute_description();
+
 		VkPipelineVertexInputStateCreateInfo vertex_input_create_info{};
 		vertex_input_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-		vertex_input_create_info.vertexBindingDescriptionCount = 0;
-		vertex_input_create_info.pVertexBindingDescriptions = nullptr;
-		vertex_input_create_info.vertexAttributeDescriptionCount = 0;
-		vertex_input_create_info.pVertexAttributeDescriptions = nullptr;
+		vertex_input_create_info.vertexBindingDescriptionCount = 1;
+		vertex_input_create_info.pVertexBindingDescriptions = &vertex_input_binding;
+		vertex_input_create_info.vertexAttributeDescriptionCount = vertex_input_attribute.size();
+		vertex_input_create_info.pVertexAttributeDescriptions = vertex_input_attribute.data();
 
 		VkPipelineInputAssemblyStateCreateInfo input_assembly_create_info{};
 		input_assembly_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -895,6 +904,11 @@ namespace fantasy
 		vkCmdBindPipeline(_cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, _graphics_pipeline);
 		vkCmdSetViewport(_cmd_buffer, 0, 1, &_viewport);
 		vkCmdSetScissor(_cmd_buffer, 0, 1, &_scissor);
+
+		VkBuffer vertex_buffers[] = { _vertex_buffer };
+		VkDeviceSize vertex_buffer_offsets[] = { 0 };
+		vkCmdBindVertexBuffers(_cmd_buffer, 0, 1, vertex_buffers, vertex_buffer_offsets);
+
 		vkCmdDraw(_cmd_buffer, 3, 1, 0, 0);
 
 		vkCmdEndRenderPass(_cmd_buffer);
@@ -1059,4 +1073,55 @@ namespace fantasy
 
 		return create_swapchain() && create_frame_buffer();
     }
+
+	uint32_t VulkanBase::get_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags)
+	{
+		for (uint32_t ix = 0; ix < _memory_properties.memoryTypeCount; ++ix)
+		{
+			if ((type_filter & (1 << ix)) && (_memory_properties.memoryTypes[ix].propertyFlags & flags) == flags)
+			{
+				return ix;
+			}
+		}
+		return INVALID_SIZE_32;
+	}
+
+
+	bool VulkanBase::create_vertex_buffer()
+	{
+		VkBufferCreateInfo buffer_info{};
+		buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		buffer_info.size = sizeof(Vertex) * vertices.size();
+		buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		ReturnIfFalse(vkCreateBuffer(_device, &buffer_info, nullptr, &_vertex_buffer) == VK_SUCCESS); 
+
+		VkMemoryRequirements memory_requirements;
+		vkGetBufferMemoryRequirements(_device, _vertex_buffer, &memory_requirements);
+
+		VkMemoryAllocateInfo allocate_info{};
+		allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocate_info.allocationSize = memory_requirements.size;
+		allocate_info.memoryTypeIndex = get_memory_type(
+			memory_requirements.memoryTypeBits, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+		);
+
+		ReturnIfFalse(vkAllocateMemory(_device, &allocate_info, nullptr, &_vertex_buffer_memory) == VK_SUCCESS);
+		ReturnIfFalse(vkBindBufferMemory(_device, _vertex_buffer, _vertex_buffer_memory, 0) == VK_SUCCESS);
+
+		void* vertex_data = nullptr;
+		vkMapMemory(_device, _vertex_buffer_memory, 0, buffer_info.size, 0, &vertex_data);
+		memcpy(vertex_data, vertices.data(), vertices.size() * sizeof(Vertex));
+		vkUnmapMemory(_device, _vertex_buffer_memory);
+
+		return true;
+	}
+
+	bool VulkanBase::create_index_buffer()
+	{
+		return true;
+	}
+
 }

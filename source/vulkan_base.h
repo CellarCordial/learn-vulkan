@@ -12,10 +12,53 @@
 #include <vector>
 #include "glfw_window.h"
 #include "../source/core/math/common.h"
+#include "../source/core/math/vector.h"
 
 
 namespace fantasy
 {
+	struct Vertex
+	{
+		float2 position;
+		float3 color;
+
+		static VkVertexInputBindingDescription get_input_binding_description()
+		{
+			VkVertexInputBindingDescription ret{};
+			ret.binding = 0;
+			ret.stride = sizeof(Vertex);
+			ret.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+			return ret;
+
+			// VK_VERTEX_INPUT_RATE_VERTEX: 在每个顶点之后移动到下一个数据条目
+			// VK_VERTEX_INPUT_RATE_INSTANCE: 在每个实例之后移动到下一个数据条目
+		}
+
+		static std::array<VkVertexInputAttributeDescription, 2> get_input_attribute_description()
+		{
+			std::array<VkVertexInputAttributeDescription, 2> ret{};
+
+			ret[0].binding = 0;
+			ret[0].location = 0;
+			ret[0].format = VK_FORMAT_R32G32_SFLOAT;
+			ret[0].offset = offsetof(Vertex, position);
+
+			ret[1].binding = 0;
+			ret[1].location = 1;
+			ret[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+			ret[1].offset = offsetof(Vertex, color);
+
+			return ret;
+		}
+
+	};
+
+	static std::vector<Vertex> vertices = {
+		{{0.0f , -0.5f }, {1.0f , 0.0f , 0.0f}},
+		{{0.5f , 0.5f }, {0.0f , 1.0f , 0.0f}},
+		{{-0.5f , 0.5f }, {0.0f , 0.0f , 1.0f}}
+	};
+
 	class VulkanBase
 	{
 	public:
@@ -73,9 +116,12 @@ namespace fantasy
 		bool update_client_resolution();
 		bool recreate_swapchain();
 
+		bool create_vertex_buffer();
+		bool create_index_buffer();
+
 		bool draw();
 
-
+		uint32_t get_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags);
 	
 	private:
 		GlfwWindow _window;
@@ -97,6 +143,7 @@ namespace fantasy
 
 		std::vector<const char*> _device_extensions;
 		VkPhysicalDevice _physical_device = VK_NULL_HANDLE;
+		VkPhysicalDeviceMemoryProperties _memory_properties;
 
 
 		
@@ -143,6 +190,8 @@ namespace fantasy
 		VkSemaphore _render_finished_semaphore;
 		VkFence _fence;
 
+		VkBuffer _vertex_buffer;
+		VkDeviceMemory _vertex_buffer_memory;
 	};
 }
 
