@@ -1,3 +1,5 @@
+
+[[vk::binding(0, 0)]]
 cbuffer constant : register(b0)
 {
     float4x4 world_matrix;

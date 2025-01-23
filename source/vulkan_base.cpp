@@ -6,6 +6,8 @@
 #include <set>
 #include <vector>
 #include "core/math/common.h"
+#include "core/math/matrix.h"
+#include "core/math/vector.h"
 #include "vulkan/vulkan_core.h"
 #include "shader/shader_compiler.h"
 
@@ -56,6 +58,10 @@ namespace fantasy
 		ReturnIfFalse(create_sync_objects());
 		ReturnIfFalse(create_vertex_buffer());
 		ReturnIfFalse(create_index_buffer());
+
+		ReturnIfFalse(create_binding_layout());
+		ReturnIfFalse(create_constant_buffer());
+		ReturnIfFalse(create_binding_set());
 		return true;
 	}
 
@@ -71,8 +77,9 @@ namespace fantasy
 		vkDestroyFence(_device, _fence, nullptr);
 
 		clean_up_swapchain();
-
-		vkDestroyDescriptorSetLayout(_device, _binding_set, nullptr);	
+		
+		vkDestroyDescriptorPool(_device, _descriptor_pool, nullptr);
+		vkDestroyDescriptorSetLayout(_device, _binding_layout, nullptr);	
 		for (uint32_t ix = 0; ix < _constant_buffers.size(); ++ix)
 		{
 			vkDestroyBuffer(_device, _constant_buffers[ix], nullptr);
@@ -643,7 +650,7 @@ namespace fantasy
 		raster_create_info.lineWidth = 1.0f;
 
 		raster_create_info.cullMode = VK_CULL_MODE_BACK_BIT;
-		raster_create_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+		raster_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 		
 		// 设置为 VK_TRUE 时, 光栅化程序可以添加一个常量值或是一个基于片段所处线段的斜率得到的变量值到深度值上.
 		raster_create_info.depthBiasEnable = VK_FALSE;
@@ -698,14 +705,14 @@ namespace fantasy
 		dynamic_state_create_info.dynamicStateCount = 2;
 		dynamic_state_create_info.pDynamicStates = dynamic_state;
 
-		ReturnIfFalse(create_binding_set());
+		ReturnIfFalse(create_binding_layout());
 
 		VkPipelineLayoutCreateInfo layout_create_info{};
 		layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		
 		// 暂时什么都不需要.
 		layout_create_info.setLayoutCount = 1;
-		layout_create_info.pSetLayouts = &_binding_set;
+		layout_create_info.pSetLayouts = &_binding_layout;
 		layout_create_info.pushConstantRangeCount = 0;
 		layout_create_info.pPushConstantRanges = nullptr;
 
@@ -921,6 +928,17 @@ namespace fantasy
 
 		vkCmdBindIndexBuffer(_cmd_buffer, _index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
+		vkCmdBindDescriptorSets(
+			_cmd_buffer, 
+			VK_PIPELINE_BIND_POINT_GRAPHICS, 
+			_layout, 
+			0, 
+			1, 
+			&_binding_sets[frame_buffer_index], 
+			0, 
+			nullptr
+		);
+
 		vkCmdDrawIndexed(_cmd_buffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
 		vkCmdEndRenderPass(_cmd_buffer);
@@ -978,7 +996,6 @@ namespace fantasy
         ReturnIfFalse(record_command(back_buffer_index));
 
 		update_constant_buffer(back_buffer_index);
-
 
 		VkSubmitInfo submit_info{};
 		submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1239,20 +1256,20 @@ namespace fantasy
 		return true;
 	}
 
-	bool VulkanBase::create_binding_set()
+	bool VulkanBase::create_binding_layout()
 	{
-		VkDescriptorSetLayoutBinding binding_set_desc{};
-		binding_set_desc.binding = 0;
-		binding_set_desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		binding_set_desc.descriptorCount = 1;
-		binding_set_desc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		VkDescriptorSetLayoutBinding binding_layout_desc{};
+		binding_layout_desc.binding = 0;
+		binding_layout_desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		binding_layout_desc.descriptorCount = 1;
+		binding_layout_desc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
 		VkDescriptorSetLayoutCreateInfo create_info{};
 		create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 		create_info.bindingCount = 1;
-		create_info.pBindings = &binding_set_desc;
+		create_info.pBindings = &binding_layout_desc;
 
-		return vkCreateDescriptorSetLayout(_device, &create_info, nullptr, &_binding_set) == VK_SUCCESS;
+		return vkCreateDescriptorSetLayout(_device, &create_info, nullptr, &_binding_layout) == VK_SUCCESS;
 	}
 
 	bool VulkanBase::create_constant_buffer()
@@ -1272,7 +1289,7 @@ namespace fantasy
 				_constant_buffers[ix], 
 				_constant_buffer_memorys[ix]
 			));
-			ReturnIfFalse(vkMapMemory(
+			ReturnIfFalse(VK_SUCCESS == vkMapMemory(
 				_device, 
 				_constant_buffer_memorys[ix], 
 				0, 
@@ -1292,8 +1309,75 @@ namespace fantasy
         float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
 
         Constant ubo{};
+		ubo.world_matrix = rotate(float3(0.0f, 0.0f, time));
+		ubo.view_proj = look_at_left_hand(float3(2.0f, 2.0f, 2.0f), float3(0.0f), float3(0.0f, 0.0f, 1.0f));
+		ubo.view_proj = mul(
+			ubo.view_proj, 
+			perspective_left_hand(
+				90, 
+				static_cast<float>(_client_resolution.width) / _client_resolution.height, 
+				0.1f, 
+				100.0f
+			)
+		);
 
         memcpy(_constant_buffer_mapped_datas[back_buffer_index], &ubo, sizeof(ubo));
+	}
+
+	bool VulkanBase::create_binding_set()
+	{
+		VkDescriptorPoolSize pool_size{};
+		pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		pool_size.descriptorCount = static_cast<uint32_t>(_back_buffers.size());
+
+		VkDescriptorPoolCreateInfo create_info{};
+		create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+		create_info.poolSizeCount = 1;
+		create_info.pPoolSizes = &pool_size;
+		create_info.maxSets = NUM_FRAMES_IN_FLIGHT;
+
+		ReturnIfFalse(vkCreateDescriptorPool(_device, &create_info, nullptr, &_descriptor_pool) == VK_SUCCESS);
+
+		std::vector<VkDescriptorSetLayout> layouts(NUM_FRAMES_IN_FLIGHT, _binding_layout);
+
+		VkDescriptorSetAllocateInfo allocate_info{};
+		allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocate_info.descriptorPool = _descriptor_pool;
+		allocate_info.descriptorSetCount = NUM_FRAMES_IN_FLIGHT;
+		allocate_info.pSetLayouts = layouts.data();
+
+		_binding_sets.resize(NUM_FRAMES_IN_FLIGHT);
+
+		ReturnIfFalse(vkAllocateDescriptorSets(_device, &allocate_info, _binding_sets.data()) == VK_SUCCESS);
+
+		for (uint32_t ix = 0; ix < NUM_FRAMES_IN_FLIGHT; ++ix)
+		{
+			VkDescriptorBufferInfo buffer_info{};
+			buffer_info.buffer = _constant_buffers[ix];
+			buffer_info.offset = 0;
+			buffer_info.range = sizeof(Constant);
+
+			VkWriteDescriptorSet write_descriptor_set{};
+			write_descriptor_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			write_descriptor_set.dstSet = _binding_sets[ix];
+			write_descriptor_set.dstBinding = 0;
+
+			// 没有使用数组作为描述符, 将索引指定为0即可.
+			write_descriptor_set.dstArrayElement = 0;
+			write_descriptor_set.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			write_descriptor_set.descriptorCount = 1;
+
+			// pBufferInfo 成员变量用于指定描述符引用的缓冲数据.
+			// pImageInfo 成员变量用于指定描述符引用的图像数据.
+			// pTexelBufferView 成员变量用于指定描述符引用的缓冲视图.
+			write_descriptor_set.pBufferInfo = &buffer_info;
+			write_descriptor_set.pImageInfo = nullptr;
+			write_descriptor_set.pTexelBufferView = nullptr;
+
+			vkUpdateDescriptorSets(_device, 1, &write_descriptor_set, 0, nullptr);
+		}
+
+		return true;
 	}
 
 }

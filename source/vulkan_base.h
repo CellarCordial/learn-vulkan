@@ -136,10 +136,10 @@ namespace fantasy
 			VkBuffer& buffer, 
 			VkDeviceMemory& buffer_memory
 		);
-		bool create_binding_set();
+		bool create_binding_layout();
 		bool create_constant_buffer();
 		void update_constant_buffer(uint32_t back_buffer_index);
-
+		bool create_binding_set();
 		bool copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size);
 
 		bool draw();
@@ -218,7 +218,9 @@ namespace fantasy
 		VkBuffer _index_buffer;
 		VkDeviceMemory _index_buffer_memory;
 
-		VkDescriptorSetLayout _binding_set;
+		VkDescriptorSetLayout _binding_layout;
+		VkDescriptorPool _descriptor_pool;
+		std::vector<VkDescriptorSet> _binding_sets;
 		std::vector<VkBuffer> _constant_buffers;
 		std::vector<VkDeviceMemory> _constant_buffer_memorys;
 		std::vector<void*> _constant_buffer_mapped_datas;
