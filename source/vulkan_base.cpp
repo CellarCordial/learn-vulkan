@@ -55,12 +55,15 @@ namespace fantasy
 		ReturnIfFalse(create_command_buffer());
 		ReturnIfFalse(create_sync_objects());
 		ReturnIfFalse(create_vertex_buffer());
+		ReturnIfFalse(create_index_buffer());
 		return true;
 	}
 
 
 	bool VulkanBase::destroy()
 	{
+		vkDestroyBuffer(_device, _index_buffer, nullptr);
+		vkFreeMemory(_device, _index_buffer_memory, nullptr);
 		vkDestroyBuffer(_device, _vertex_buffer, nullptr);
 		vkFreeMemory(_device, _vertex_buffer_memory, nullptr);
 		vkDestroySemaphore(_device, _back_buffer_avaible_semaphore, nullptr);
@@ -68,7 +71,13 @@ namespace fantasy
 		vkDestroyFence(_device, _fence, nullptr);
 
 		clean_up_swapchain();
-		
+
+		vkDestroyDescriptorSetLayout(_device, _binding_set, nullptr);	
+		for (uint32_t ix = 0; ix < _constant_buffers.size(); ++ix)
+		{
+			vkDestroyBuffer(_device, _constant_buffers[ix], nullptr);
+			vkFreeMemory(_device, _constant_buffer_memorys[ix], nullptr);
+		}
 		vkFreeCommandBuffers(_device, _cmd_pool, 1, &_cmd_buffer);
 		vkDestroyCommandPool(_device, _cmd_pool, nullptr);
 		vkDestroyPipeline(_device, _graphics_pipeline, nullptr);
@@ -689,13 +698,14 @@ namespace fantasy
 		dynamic_state_create_info.dynamicStateCount = 2;
 		dynamic_state_create_info.pDynamicStates = dynamic_state;
 
+		ReturnIfFalse(create_binding_set());
 
 		VkPipelineLayoutCreateInfo layout_create_info{};
 		layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		
 		// 暂时什么都不需要.
-		layout_create_info.setLayoutCount = 0;
-		layout_create_info.pSetLayouts = nullptr;
+		layout_create_info.setLayoutCount = 1;
+		layout_create_info.pSetLayouts = &_binding_set;
 		layout_create_info.pushConstantRangeCount = 0;
 		layout_create_info.pPushConstantRanges = nullptr;
 
@@ -875,7 +885,7 @@ namespace fantasy
 		return true;
 	}
 
-	bool VulkanBase::record_command(uint32_t cmd_buffer_index)
+	bool VulkanBase::record_command(uint32_t frame_buffer_index)
 	{
 		VkCommandBufferBeginInfo cmd_buffer_begin{};
 		cmd_buffer_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -888,7 +898,7 @@ namespace fantasy
 		VkRenderPassBeginInfo render_pass_begin_info{};
 		render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 		render_pass_begin_info.renderPass = _render_pass;
-		render_pass_begin_info.framebuffer = _frame_buffers[cmd_buffer_index];
+		render_pass_begin_info.framebuffer = _frame_buffers[frame_buffer_index];
 		render_pass_begin_info.renderArea.offset = { 0, 0 };
 		render_pass_begin_info.renderArea.extent = _client_resolution;
 
@@ -909,7 +919,9 @@ namespace fantasy
 		VkDeviceSize vertex_buffer_offsets[] = { 0 };
 		vkCmdBindVertexBuffers(_cmd_buffer, 0, 1, vertex_buffers, vertex_buffer_offsets);
 
-		vkCmdDraw(_cmd_buffer, 3, 1, 0, 0);
+		vkCmdBindIndexBuffer(_cmd_buffer, _index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		vkCmdDrawIndexed(_cmd_buffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
 		vkCmdEndRenderPass(_cmd_buffer);
 
@@ -964,6 +976,9 @@ namespace fantasy
 
 		ReturnIfFalse(vkResetCommandBuffer(_cmd_buffer, 0) == VK_SUCCESS);
         ReturnIfFalse(record_command(back_buffer_index));
+
+		update_constant_buffer(back_buffer_index);
+
 
 		VkSubmitInfo submit_info{};
 		submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1124,6 +1139,36 @@ namespace fantasy
 
 	bool VulkanBase::create_index_buffer()
 	{
+		VkDeviceSize index_buffer_size = sizeof(uint32_t) * indices.size();
+
+		VkBuffer staging_buffer;
+		VkDeviceMemory staging_memory;
+		ReturnIfFalse(create_buffer(
+			index_buffer_size, 
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+			staging_buffer, 
+			staging_memory
+		));
+
+		void* index_data = nullptr;
+		vkMapMemory(_device, staging_memory, 0, index_buffer_size, 0, &index_data);
+		memcpy(index_data, indices.data(), indices.size() * sizeof(uint32_t));
+		vkUnmapMemory(_device, staging_memory);
+
+		ReturnIfFalse(create_buffer(
+			index_buffer_size, 
+			VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+			_index_buffer, 
+			_index_buffer_memory
+		));
+
+		ReturnIfFalse(copy_buffer(_index_buffer, staging_buffer, index_buffer_size));
+
+		vkDestroyBuffer(_device, staging_buffer, nullptr);
+		vkFreeMemory(_device, staging_memory, nullptr);
+
 		return true;
 	}
 
@@ -1194,5 +1239,61 @@ namespace fantasy
 		return true;
 	}
 
+	bool VulkanBase::create_binding_set()
+	{
+		VkDescriptorSetLayoutBinding binding_set_desc{};
+		binding_set_desc.binding = 0;
+		binding_set_desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		binding_set_desc.descriptorCount = 1;
+		binding_set_desc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+		VkDescriptorSetLayoutCreateInfo create_info{};
+		create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		create_info.bindingCount = 1;
+		create_info.pBindings = &binding_set_desc;
+
+		return vkCreateDescriptorSetLayout(_device, &create_info, nullptr, &_binding_set) == VK_SUCCESS;
+	}
+
+	bool VulkanBase::create_constant_buffer()
+	{
+		VkDeviceSize buffer_size = sizeof(Constant);
+
+		_constant_buffers.resize(_back_buffers.size());
+		_constant_buffer_memorys.resize(_back_buffers.size());
+		_constant_buffer_mapped_datas.resize(_back_buffers.size());
+
+		for (uint32_t ix = 0; ix < _back_buffers.size(); ++ix)
+		{
+			ReturnIfFalse(create_buffer(
+				buffer_size, 
+				VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+				_constant_buffers[ix], 
+				_constant_buffer_memorys[ix]
+			));
+			ReturnIfFalse(vkMapMemory(
+				_device, 
+				_constant_buffer_memorys[ix], 
+				0, 
+				buffer_size, 
+				0, 
+				&_constant_buffer_mapped_datas[ix]
+			));
+		}
+		return true;
+	}
+
+	void VulkanBase::update_constant_buffer(uint32_t back_buffer_index)
+	{
+		static auto startTime = std::chrono::high_resolution_clock::now();
+
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+        Constant ubo{};
+
+        memcpy(_constant_buffer_mapped_datas[back_buffer_index], &ubo, sizeof(ubo));
+	}
 
 }

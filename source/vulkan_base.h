@@ -12,11 +12,17 @@
 #include <vector>
 #include "glfw_window.h"
 #include "../source/core/math/common.h"
-#include "../source/core/math/vector.h"
+#include "../source/core/math/matrix.h"
 
 
 namespace fantasy
 {
+	struct Constant
+	{
+		float4x4 world_matrix;
+		float4x4 view_proj;
+	};
+
 	struct Vertex
 	{
 		float2 position;
@@ -54,9 +60,14 @@ namespace fantasy
 	};
 
 	static std::vector<Vertex> vertices = {
-		{{0.0f , -0.5f }, {1.0f , 0.0f , 0.0f}},
-		{{0.5f , 0.5f }, {0.0f , 1.0f , 0.0f}},
-		{{-0.5f , 0.5f }, {0.0f , 0.0f , 1.0f}}
+		{{ -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }},
+		{{ 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }},
+		{{ 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }},
+		{{ -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }}
+	};
+
+	static std::vector<uint32_t> indices = {
+		0, 1, 2, 2, 3, 0
 	};
 
 	class VulkanBase
@@ -109,7 +120,7 @@ namespace fantasy
 		bool create_frame_buffer();
 		bool create_command_pool();
 		bool create_command_buffer();
-		bool record_command(uint32_t cmd_buffer_index);
+		bool record_command(uint32_t frame_buffer_index);
 		bool create_sync_objects();
 
 		void clean_up_swapchain();
@@ -125,6 +136,9 @@ namespace fantasy
 			VkBuffer& buffer, 
 			VkDeviceMemory& buffer_memory
 		);
+		bool create_binding_set();
+		bool create_constant_buffer();
+		void update_constant_buffer(uint32_t back_buffer_index);
 
 		bool copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size);
 
@@ -201,6 +215,13 @@ namespace fantasy
 
 		VkBuffer _vertex_buffer;
 		VkDeviceMemory _vertex_buffer_memory;
+		VkBuffer _index_buffer;
+		VkDeviceMemory _index_buffer_memory;
+
+		VkDescriptorSetLayout _binding_set;
+		std::vector<VkBuffer> _constant_buffers;
+		std::vector<VkDeviceMemory> _constant_buffer_memorys;
+		std::vector<void*> _constant_buffer_mapped_datas;
 	};
 }
 
