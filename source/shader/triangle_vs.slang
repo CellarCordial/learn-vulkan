@@ -24,5 +24,6 @@ VertexOutput main(VertexInput input)
     VertexOutput output;
     output.sv_position = mul(float4(input.position, 0.0f, 1.0f), mul(world_matrix, view_proj));
     output.color = input.color;
+
     return output;
 }

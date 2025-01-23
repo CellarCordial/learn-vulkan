@@ -77,7 +77,7 @@ namespace fantasy
 		{
 			if (!_window.initialize_window(VkExtent2D{ 1280,720 })) return false;
 
-			initialize();
+			ReturnIfFalse(initialize());
 
 			while (!_window.should_close())
 			{
