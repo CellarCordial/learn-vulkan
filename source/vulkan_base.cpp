@@ -1380,4 +1380,18 @@ namespace fantasy
 		return true;
 	}
 
+	bool VulkanBase::create_texture()
+	{
+		int width, height, channels;
+		auto image = stbi_load(
+			std::string(std::string(PROJ_DIR) + "/asset/test_image.jpg").c_str(), 
+			&width, 
+			&height, 
+			&channels, 
+			STBI_rgb_alpha
+		);
+		return true;
+	}
+
+
 }

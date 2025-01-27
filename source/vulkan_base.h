@@ -8,6 +8,8 @@
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
+
+#include <stb_image.h>
 #include <vulkan/vulkan.h>
 #include <vector>
 #include "glfw_window.h"
@@ -141,7 +143,7 @@ namespace fantasy
 		void update_constant_buffer(uint32_t back_buffer_index);
 		bool create_binding_set();
 		bool copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size);
-
+		bool create_texture();
 		bool draw();
 
 		uint32_t get_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags);
