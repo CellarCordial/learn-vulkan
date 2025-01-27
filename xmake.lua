@@ -1,6 +1,6 @@
 add_rules("mode.debug", "mode.release")
 add_rules("plugin.compile_commands.autoupdate", {outputdir = "$(projectdir)"})
-add_requires("spdlog", "glfw", "vulkansdk", "slang")
+add_requires("spdlog", "glfw", "vulkansdk", "slang", "stb")
 
 local proj_dir = os.projectdir()
 local normalized_proj_dir = proj_dir:gsub("\\", "/")
@@ -17,5 +17,5 @@ target("learn-vulkan")
         "PROJ_DIR=\"" .. normalized_proj_dir .. "/\""
     )
     add_files("$(projectdir)/source/**.cpp")
-    add_packages("spdlog", "glfw", "vulkansdk", "slang")
+    add_packages("spdlog", "glfw", "vulkansdk", "slang", "stb")
 target_end()
