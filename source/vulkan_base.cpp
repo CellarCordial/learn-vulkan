@@ -5,11 +5,16 @@
 #include <minwindef.h>
 #include <set>
 #include <vector>
+#include <windef.h>
 #include "core/math/common.h"
 #include "core/math/matrix.h"
 #include "core/math/vector.h"
 #include "vulkan/vulkan_core.h"
 #include "shader/shader_compiler.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 
 namespace fantasy
 {
@@ -61,6 +66,8 @@ namespace fantasy
 
 		ReturnIfFalse(create_binding_layout());
 		ReturnIfFalse(create_constant_buffer());
+		ReturnIfFalse(create_texture());
+		ReturnIfFalse(create_sampler());
 		ReturnIfFalse(create_binding_set());
 		return true;
 	}
@@ -77,6 +84,12 @@ namespace fantasy
 		vkDestroyFence(_device, _fence, nullptr);
 
 		clean_up_swapchain();
+
+		vkDestroySampler(_device, _linear_wrap_sampler, nullptr);
+
+		vkDestroyImageView(_device, _test_texture_view, nullptr);
+		vkDestroyImage(_device, _test_texture, nullptr);
+		vkFreeMemory(_device, _test_texture_memory, nullptr);
 		
 		vkDestroyDescriptorPool(_device, _descriptor_pool, nullptr);
 		vkDestroyDescriptorSetLayout(_device, _binding_layout, nullptr);	
@@ -1222,52 +1235,46 @@ namespace fantasy
 
 	bool VulkanBase::copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size)
 	{
-		VkCommandBufferAllocateInfo cmd_buffer_alloc_info{};
-        cmd_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cmd_buffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cmd_buffer_alloc_info.commandPool = _cmd_pool;
-        cmd_buffer_alloc_info.commandBufferCount = 1;
-
 		VkCommandBuffer cmd_buffer;
-		ReturnIfFalse(vkAllocateCommandBuffers(_device, &cmd_buffer_alloc_info, &cmd_buffer) == VK_SUCCESS);
-		
-		VkCommandBufferBeginInfo begin_info{};
-        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-		ReturnIfFalse(vkBeginCommandBuffer(cmd_buffer, &begin_info) == VK_SUCCESS);
+		ReturnIfFalse(begin_once_command_buffer(cmd_buffer));
 
 		VkBufferCopy copy_region{};
 		copy_region.size = size;
 
 		vkCmdCopyBuffer(cmd_buffer, src_buffer, dst_buffer, 1, &copy_region);
 
-		ReturnIfFalse(vkEndCommandBuffer(cmd_buffer) == VK_SUCCESS);
-
-		VkSubmitInfo submit_info{};
-        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &cmd_buffer;
-
-        ReturnIfFalse(vkQueueSubmit(_graphics_queue, 1, &submit_info, VK_NULL_HANDLE) == VK_SUCCESS);
-        ReturnIfFalse(vkQueueWaitIdle(_graphics_queue) == VK_SUCCESS);
-
-        vkFreeCommandBuffers(_device, _cmd_pool, 1, &cmd_buffer);
+		ReturnIfFalse(end_once_command_buffer(cmd_buffer));
 		return true;
 	}
 
 	bool VulkanBase::create_binding_layout()
 	{
-		VkDescriptorSetLayoutBinding binding_layout_desc{};
-		binding_layout_desc.binding = 0;
-		binding_layout_desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		binding_layout_desc.descriptorCount = 1;
-		binding_layout_desc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		VkDescriptorSetLayoutBinding constant_layout_desc{};
+		constant_layout_desc.binding = 0;
+		constant_layout_desc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		constant_layout_desc.descriptorCount = 1;
+		constant_layout_desc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+		VkDescriptorSetLayoutBinding texture_layout_desc{};
+        texture_layout_desc.binding = 1;
+        texture_layout_desc.descriptorCount = 1;
+        texture_layout_desc.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        texture_layout_desc.pImmutableSamplers = nullptr;
+        texture_layout_desc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		VkDescriptorSetLayoutBinding sampler_layout_desc{};
+        sampler_layout_desc.binding = 2;
+        sampler_layout_desc.descriptorCount = 1;
+        sampler_layout_desc.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        sampler_layout_desc.pImmutableSamplers = nullptr;
+        sampler_layout_desc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+ 		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {constant_layout_desc, texture_layout_desc, sampler_layout_desc};
 
 		VkDescriptorSetLayoutCreateInfo create_info{};
 		create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-		create_info.bindingCount = 1;
-		create_info.pBindings = &binding_layout_desc;
+		create_info.bindingCount = static_cast<uint32_t>(bindings.size());
+		create_info.pBindings = bindings.data();
 
 		return vkCreateDescriptorSetLayout(_device, &create_info, nullptr, &_binding_layout) == VK_SUCCESS;
 	}
@@ -1326,14 +1333,18 @@ namespace fantasy
 
 	bool VulkanBase::create_binding_set()
 	{
-		VkDescriptorPoolSize pool_size{};
-		pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		pool_size.descriptorCount = static_cast<uint32_t>(_back_buffers.size());
+		std::array<VkDescriptorPoolSize, 3> pool_size{};
+        pool_size[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pool_size[0].descriptorCount = static_cast<uint32_t>(NUM_FRAMES_IN_FLIGHT);
+        pool_size[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        pool_size[1].descriptorCount = static_cast<uint32_t>(NUM_FRAMES_IN_FLIGHT);
+        pool_size[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+        pool_size[2].descriptorCount = static_cast<uint32_t>(NUM_FRAMES_IN_FLIGHT);
 
 		VkDescriptorPoolCreateInfo create_info{};
 		create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		create_info.poolSizeCount = 1;
-		create_info.pPoolSizes = &pool_size;
+		create_info.poolSizeCount = static_cast<uint32_t>(pool_size.size());
+		create_info.pPoolSizes = pool_size.data();
 		create_info.maxSets = NUM_FRAMES_IN_FLIGHT;
 
 		ReturnIfFalse(vkCreateDescriptorPool(_device, &create_info, nullptr, &_descriptor_pool) == VK_SUCCESS);
@@ -1356,25 +1367,57 @@ namespace fantasy
 			buffer_info.buffer = _constant_buffers[ix];
 			buffer_info.offset = 0;
 			buffer_info.range = sizeof(Constant);
+			
+            VkDescriptorImageInfo texture_info{};
+            texture_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            texture_info.imageView = _test_texture_view;
 
-			VkWriteDescriptorSet write_descriptor_set{};
-			write_descriptor_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			write_descriptor_set.dstSet = _binding_sets[ix];
-			write_descriptor_set.dstBinding = 0;
+            VkDescriptorImageInfo sampler_info{};
+            sampler_info.sampler = _linear_wrap_sampler;
+
+			std::array<VkWriteDescriptorSet, 3> write_descriptor_sets;
+			write_descriptor_sets[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			write_descriptor_sets[0].dstSet = _binding_sets[ix];
+			write_descriptor_sets[0].dstBinding = 0;
 
 			// 没有使用数组作为描述符, 将索引指定为0即可.
-			write_descriptor_set.dstArrayElement = 0;
-			write_descriptor_set.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			write_descriptor_set.descriptorCount = 1;
+			write_descriptor_sets[0].dstArrayElement = 0;
+			write_descriptor_sets[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			write_descriptor_sets[0].descriptorCount = 1;
+			write_descriptor_sets[0].pNext = NULL;
 
 			// pBufferInfo 成员变量用于指定描述符引用的缓冲数据.
 			// pImageInfo 成员变量用于指定描述符引用的图像数据.
 			// pTexelBufferView 成员变量用于指定描述符引用的缓冲视图.
-			write_descriptor_set.pBufferInfo = &buffer_info;
-			write_descriptor_set.pImageInfo = nullptr;
-			write_descriptor_set.pTexelBufferView = nullptr;
+			write_descriptor_sets[0].pBufferInfo = &buffer_info;
+			write_descriptor_sets[0].pImageInfo = nullptr;
+			write_descriptor_sets[0].pTexelBufferView = nullptr;
 
-			vkUpdateDescriptorSets(_device, 1, &write_descriptor_set, 0, nullptr);
+			write_descriptor_sets[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write_descriptor_sets[1].dstSet = _binding_sets[ix];
+            write_descriptor_sets[1].dstBinding = 1;
+            write_descriptor_sets[1].dstArrayElement = 0;
+            write_descriptor_sets[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            write_descriptor_sets[1].descriptorCount = 1;
+            write_descriptor_sets[1].pImageInfo = &texture_info;
+			write_descriptor_sets[1].pNext = NULL;
+
+			write_descriptor_sets[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			write_descriptor_sets[2].dstSet = _binding_sets[ix];
+			write_descriptor_sets[2].dstBinding = 2;
+			write_descriptor_sets[2].descriptorCount = 1;
+            write_descriptor_sets[2].dstArrayElement = 0;
+			write_descriptor_sets[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+			write_descriptor_sets[2].pImageInfo = &sampler_info;
+			write_descriptor_sets[2].pNext = NULL;
+
+			vkUpdateDescriptorSets(
+				_device, 
+				static_cast<uint32_t>(write_descriptor_sets.size()), 
+				write_descriptor_sets.data(), 
+				0, 
+				nullptr
+			);
 		}
 
 		return true;
@@ -1390,8 +1433,226 @@ namespace fantasy
 			&channels, 
 			STBI_rgb_alpha
 		);
+
+		uint32_t size = width * height * 4;
+		
+		VkBuffer staging_buffer;
+		VkDeviceMemory staging_memory;
+		ReturnIfFalse(create_buffer(
+			size, 
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+			staging_buffer, 
+			staging_memory
+		));
+
+		void* data = nullptr;
+		ReturnIfFalse(vkMapMemory(_device, staging_memory, 0, size, 0, &data) == VK_SUCCESS);
+		memcpy(data, image, size);
+		vkUnmapMemory(_device, staging_memory);
+
+		stbi_image_free(image);
+
+		VkImageCreateInfo create_info{};
+		create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		create_info.imageType = VK_IMAGE_TYPE_2D;
+		create_info.extent.width = width;
+		create_info.extent.height = height;
+		create_info.extent.depth = 1;
+		create_info.mipLevels = 1;
+		create_info.arrayLayers = 1;
+		create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+		create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+
+		// tiling成员变量可以是下面这两个值之一
+		// VK_IMAGE_TILING_LINEAR: 纹素以行主序的方式排列.
+		// VK_IMAGE_TILING_OPTIMAL: 纹素以一种对访问优化的方式排列.
+		// tiling 成员变量的设置在之后不可以修改。如果读者需要直接访问图像数据, 
+		// 应该将 tiling 成员变量设置为 VK_IMAGE_TILING_LINEAR.
+		// 由于这里我们使用暂存缓冲而不是暂存图像来存储图像数据, 设置为 VK_IMAGE_TILING_LINEAR 是不必要的,
+		// 我们使用 VK_IMAGE_TILING_OPTIMAL 来获得更好的访问性能.
+		create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+		
+		// VK_IMAGE_LAYOUT_UNDEFINED: GPU不可用, 纹素在第一次变换会被丢弃. 
+		// VK_IMAGE_LAYOUT_PREINITIALIZED: GPU不可用, 纹素在第一次变换会被保留.
+		create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		create_info.flags = 0;
+
+		ReturnIfFalse(vkCreateImage(_device, &create_info, nullptr, &_test_texture) == VK_SUCCESS);
+
+		VkMemoryRequirements memory_requirements;
+		vkGetImageMemoryRequirements(_device, _test_texture, &memory_requirements);
+
+		VkMemoryAllocateInfo allocate_info{};
+		allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocate_info.allocationSize = memory_requirements.size;
+		allocate_info.memoryTypeIndex = get_memory_type(memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		ReturnIfFalse(vkAllocateMemory(_device, &allocate_info, nullptr, &_test_texture_memory) == VK_SUCCESS);
+
+		ReturnIfFalse(vkBindImageMemory(_device, _test_texture, _test_texture_memory, 0) == VK_SUCCESS);
+
+		ReturnIfFalse(texture_transition(
+			_test_texture, 
+			VK_FORMAT_R8G8B8A8_SRGB, 
+			VK_IMAGE_LAYOUT_UNDEFINED, 
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+		));
+
+		VkCommandBuffer cmd_buffer;
+		ReturnIfFalse(begin_once_command_buffer(cmd_buffer));
+
+		VkBufferImageCopy copy{};
+		copy.bufferOffset = 0;
+		copy.bufferRowLength = 0;
+		copy.bufferImageHeight = 0;
+		copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.mipLevel = 0;
+        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset = {0, 0, 0};
+        copy.imageExtent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+
+        vkCmdCopyBufferToImage(cmd_buffer, staging_buffer, _test_texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+		ReturnIfFalse(end_once_command_buffer(cmd_buffer));
+
+		ReturnIfFalse(texture_transition(
+			_test_texture, 
+			VK_FORMAT_R8G8B8A8_SRGB, 
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+		));
+
+		vkDestroyBuffer(_device, staging_buffer, nullptr);
+        vkFreeMemory(_device, staging_memory, nullptr);
+
+		VkImageViewCreateInfo view_create_info{};
+		view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		view_create_info.image = _test_texture;
+		view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		view_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+		view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		view_create_info.subresourceRange.baseMipLevel = 0;
+		view_create_info.subresourceRange.levelCount = 1;
+		view_create_info.subresourceRange.baseArrayLayer = 0;
+		view_create_info.subresourceRange.layerCount = 1;
+
+		return vkCreateImageView(_device, &view_create_info, nullptr, &_test_texture_view) == VK_SUCCESS;		
+	}
+
+
+	bool VulkanBase::begin_once_command_buffer(VkCommandBuffer& cmd_buffer)
+	{
+		VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = _cmd_pool;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        ReturnIfFalse(vkAllocateCommandBuffers(_device, &allocInfo, &cmd_buffer) == VK_SUCCESS);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        return vkBeginCommandBuffer(cmd_buffer, &beginInfo) == VK_SUCCESS;
+	}
+
+	bool VulkanBase::end_once_command_buffer(VkCommandBuffer& cmd_buffer)
+	{
+		ReturnIfFalse(vkEndCommandBuffer(cmd_buffer) == VK_SUCCESS);
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmd_buffer;
+
+        ReturnIfFalse(vkQueueSubmit(_graphics_queue, 1, &submitInfo, VK_NULL_HANDLE) == VK_SUCCESS);
+        ReturnIfFalse(vkQueueWaitIdle(_graphics_queue) == VK_SUCCESS);
+
+        vkFreeCommandBuffers(_device, _cmd_pool, 1, &cmd_buffer);
 		return true;
 	}
 
+	bool VulkanBase::texture_transition(VkImage texture, VkFormat format, VkImageLayout old_layout, VkImageLayout new_layout)
+	{
+		VkCommandBuffer cmd_buffer;
+		ReturnIfFalse(begin_once_command_buffer(cmd_buffer));
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = old_layout;
+		barrier.newLayout = new_layout;
+
+		// 如果使用屏障来传递队列族所有权, 那么就需要对 srcQueueFamilyIndex 和 dstQueueFamilyIndex 进行设置.
+		// 如果读者不进行队列所有权传递, 则必须将这两个成员变量的值设置为 VKQUEUE_FAMILY_IGNORED.
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+		barrier.image = texture;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.baseMipLevel = 0;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.baseArrayLayer = 0;
+		barrier.subresourceRange.layerCount = 1;
+
+		VkPipelineStageFlags src_stage;
+        VkPipelineStageFlags dst_stage;
+
+        if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED && new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) 
+		{
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+            src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+        } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) 
+		{
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			
+        } else 
+		{
+            return false;
+        }
+
+		vkCmdPipelineBarrier(cmd_buffer, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		ReturnIfFalse(end_once_command_buffer(cmd_buffer));
+		return true;
+	}
+
+	bool VulkanBase::create_sampler()
+	{
+		VkSamplerCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        create_info.magFilter = VK_FILTER_LINEAR;
+        create_info.minFilter = VK_FILTER_LINEAR;
+        create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        create_info.anisotropyEnable = VK_FALSE;
+        create_info.maxAnisotropy = 0;
+        create_info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+		// unnormalizedCoordinates 用于指定采样使用的坐标系统.
+		// 将其设置为VKTRUE时, 采样使用的坐标范围为 [0, texWidth) 和 [ 0, texHeight).
+		// 将其设置为VKFALSE, 采样使用的坐标范围在所有轴都是 [0, 1).
+        create_info.unnormalizedCoordinates = VK_FALSE;
+		
+		// 通过 compareEnable 和 compareOp 可以将样本和一个设定的值进行比较, 然后将比较结果用于之后的过滤操作.
+		// 通常在进行阴影贴图时会使用它.
+        create_info.compareEnable = VK_FALSE;
+        create_info.compareOp = VK_COMPARE_OP_ALWAYS;
+
+        create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		return vkCreateSampler(_device, &create_info, nullptr, &_linear_wrap_sampler) == VK_SUCCESS;
+	}
 
 }

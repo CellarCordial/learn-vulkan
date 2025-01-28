@@ -9,7 +9,6 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
 
-#include <stb_image.h>
 #include <vulkan/vulkan.h>
 #include <vector>
 #include "glfw_window.h"
@@ -29,6 +28,7 @@ namespace fantasy
 	{
 		float2 position;
 		float3 color;
+		float2 uv;
 
 		static VkVertexInputBindingDescription get_input_binding_description()
 		{
@@ -42,9 +42,9 @@ namespace fantasy
 			// VK_VERTEX_INPUT_RATE_INSTANCE: 在每个实例之后移动到下一个数据条目
 		}
 
-		static std::array<VkVertexInputAttributeDescription, 2> get_input_attribute_description()
+		static std::array<VkVertexInputAttributeDescription, 3> get_input_attribute_description()
 		{
-			std::array<VkVertexInputAttributeDescription, 2> ret{};
+			std::array<VkVertexInputAttributeDescription, 3> ret{};
 
 			ret[0].binding = 0;
 			ret[0].location = 0;
@@ -56,16 +56,21 @@ namespace fantasy
 			ret[1].format = VK_FORMAT_R32G32B32_SFLOAT;
 			ret[1].offset = offsetof(Vertex, color);
 
+			ret[2].binding = 0;
+			ret[2].location = 2;
+			ret[2].format = VK_FORMAT_R32G32_SFLOAT;
+			ret[2].offset = offsetof(Vertex, uv);
+
 			return ret;
 		}
 
 	};
 
 	static std::vector<Vertex> vertices = {
-		{{ -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }},
-		{{ 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }},
-		{{ 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f }},
-		{{ -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f }}
+		{{-0.5f , -0.5f }, {1.0f , 0.0f , 0.0f}, {1.0f , 0.0f}},
+		{{0.5f , -0.5f }, {0.0f , 1.0f , 0.0f}, {0.0f , 0.0f}},
+		{{0.5f , 0.5f }, {0.0f , 0.0f , 1.0f}, {0.0f , 1.0f}},
+		{{-0.5f , 0.5f }, {1.0f , 1.0f , 1.0f}, {1.0f , 1.0f}}
 	};
 
 	static std::vector<uint32_t> indices = {
@@ -144,7 +149,12 @@ namespace fantasy
 		bool create_binding_set();
 		bool copy_buffer(VkBuffer dst_buffer, VkBuffer src_buffer, VkDeviceSize size);
 		bool create_texture();
+		bool create_sampler();
 		bool draw();
+
+		bool begin_once_command_buffer(VkCommandBuffer& cmd_buffer);
+		bool end_once_command_buffer(VkCommandBuffer& cmd_buffer);
+		bool texture_transition(VkImage texture, VkFormat format, VkImageLayout old_layout, VkImageLayout new_layout);
 
 		uint32_t get_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags);
 	
@@ -226,6 +236,12 @@ namespace fantasy
 		std::vector<VkBuffer> _constant_buffers;
 		std::vector<VkDeviceMemory> _constant_buffer_memorys;
 		std::vector<void*> _constant_buffer_mapped_datas;
+
+		VkImage _test_texture;
+		VkDeviceMemory _test_texture_memory;
+		VkImageView _test_texture_view;
+
+		VkSampler _linear_wrap_sampler;
 	};
 }
 
