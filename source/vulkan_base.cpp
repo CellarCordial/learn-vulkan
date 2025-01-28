@@ -1316,7 +1316,7 @@ namespace fantasy
         float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
 
         Constant ubo{};
-		ubo.world_matrix = rotate(float3(0.0f, 0.0f, time));
+		ubo.world_matrix = rotate(float3(0.0f, 0.0f, time * 10.0f));
 		ubo.view_proj = look_at_left_hand(float3(2.0f, 2.0f, 2.0f), float3(0.0f), float3(0.0f, 0.0f, 1.0f));
 		ubo.view_proj = mul(
 			ubo.view_proj, 

@@ -17,5 +17,5 @@ SamplerState linear_wrap_sampler : register(s0);
 [shader("pixel")]
 float4 main(VertexOutput input) : SV_Target0
 {
-    return test_texture.Sample(linear_wrap_sampler, input.uv) + float4(input.color, 1.0f);
+    return test_texture.Sample(linear_wrap_sampler, input.uv) + float4(input.color, 1.0f) * 0.2f;
 }
